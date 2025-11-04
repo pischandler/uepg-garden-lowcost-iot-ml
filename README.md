@@ -164,5 +164,3 @@ Adicione o arquivo LICENSE na raiz do projeto.
 Projeto desenvolvido na Universidade Estadual de Ponta Grossa (UEPG) — Departamento de Informática.
 Orientador: Prof. Luciano Senger
 Coorientadora: Profa. Gabrielly de Queiroz Pereira
-
-Copiar código
