@@ -1,60 +1,73 @@
+#include <Arduino.h>
 #include "esp_camera.h"
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <DHT.h>
+#include "esp_http_server.h"
 
-// ================= CONFIGURAÇÃO DO MODELO DA CÂMERA =================
 #define CAMERA_MODEL_CUSTOM_ESP32S3_CAM
 #include "camera_pins.h"
 
-// ================= CREDENCIAIS WI-FI =================
-const char *ssid = "CLARO_2G07ECA7";
-const char *password = "Victor3894";
+static const char *WIFI_SSID = "CLARO_2G07ECA7";
+static const char *WIFI_PASSWORD = "Victor3894";
 
-// ================= PINOS E DEFINIÇÕES =================
-#define SOIL_SENSOR_PIN 1    // GPIO1 (ADC2_CH0)
-#define DHT_PIN 21           // GPIO21
-#define DHT_TYPE DHT22
-#define LDR_PIN 14
-#define RELAY_BOMBA_PIN 47      // GPIO47 - bomba
-#define RELAY_VENTOINHA_PIN 46  // GPIO46 - ventoinha (canal 2 do relé)
+static const char *INFER_HOST = "192.168.0.10";
+static const uint16_t INFER_PORT = 5000;
+static const char *INFER_PATH = "/analisar";
 
-// ---------- ADC / Calibração ----------
-#define ADC_MAX 4095
+static const int SOIL_SENSOR_PIN = 1;
+static const int LDR_PIN = 14;
+static const int DHT_PIN = 21;
+static const int RELAY_PUMP_PIN = 47;
+static const int RELAY_FAN_PIN = 46;
 
-// Ajuste estes dois valores após medir seu sensor no seu solo:
-// SOLO BEM MOLHADO (ADC baixo) e SOLO SECO (ADC alto).
-#define SOIL_WET_ADC 900
-#define SOIL_DRY_ADC 3000
+static const int ADC_MAX = 4095;
+static const int SOIL_WET_ADC = 900;
+static const int SOIL_DRY_ADC = 3000;
+static const bool LDR_INVERT = true;
 
-// Se seu LDR cresce quando escurece, deixe true para inverter e mostrar "luz %" intuitivo
-#define LDR_INVERT true
+static const int SOIL_ON_ADC = 2600;
+static const int SOIL_REARM_ADC = 2350;
+static const uint32_t IRRIGATION_PULSE_MS = 1000;
+static const uint32_t IRRIGATION_COOLDOWN_MS = 60UL * 1000UL;
 
-// ---------- Lógicas de controle ----------
-#define SOLO_SECO_LIMITE 2500        // limiar em ADC para acionar irrigação (mantido para compatibilidade)
-#define TEMPO_IRRIGACAO_MS 1000       // 1 segundo
+static const bool ENABLE_TIME_CYCLE_MODE = false;
+static const uint32_t CYCLE_PERIOD_MS = 15UL * 60UL * 1000UL;
+static const uint32_t CYCLE_PULSE_MS = 1000;
 
-#define TEMP_MAXIMA_VENTOINHA 28.0
-#define TEMP_DESLIGAR_VENTOINHA 26.0
+static const float FAN_ON_TEMP_C = 28.0f;
+static const float FAN_OFF_TEMP_C = 26.0f;
+static const uint32_t FAN_MIN_SWITCH_MS = 10UL * 1000UL;
 
-DHT dht(DHT_PIN, DHT_TYPE);
-bool bombaLigada = false;
-bool ventoinhaLigada = false;
-unsigned long tempoInicioIrrigacao = 0;
+static const uint32_t SENSOR_PERIOD_MS = 5000;
+static const uint32_t INFER_PERIOD_MS = 60UL * 1000UL;
 
-void startCameraServer();
-void setupLedFlash(int pin);
+static const size_t MAX_HTTP_BODY = 4096;
 
-// ==================== Funções utilitárias ====================
+DHT dht(DHT_PIN, DHT22);
 
-static float clampf(float v, float lo, float hi) {
+static httpd_handle_t httpServer = nullptr;
+
+static bool pumpOn = false;
+static bool fanOn = false;
+
+static uint32_t pumpStartedAt = 0;
+static uint32_t lastIrrigationAt = 0;
+static bool soilRearmed = true;
+
+static uint32_t lastFanSwitchAt = 0;
+static uint32_t lastCycleAt = 0;
+
+static uint32_t lastSensorAt = 0;
+static uint32_t lastInferAt = 0;
+
+static inline float clampf(float v, float lo, float hi) {
   if (v < lo) return lo;
   if (v > hi) return hi;
   return v;
 }
 
-// Mapeia e normaliza para 0..100 (%)
-static float percentFromRange(int x, int in_min, int in_max, bool invert=false) {
-  // evita divisão por zero
+static float percentFromRange(int x, int in_min, int in_max, bool invert) {
   if (in_max == in_min) return 0.0f;
   float t = (float)(x - in_min) / (float)(in_max - in_min);
   t = clampf(t, 0.0f, 1.0f);
@@ -62,34 +75,265 @@ static float percentFromRange(int x, int in_min, int in_max, bool invert=false) 
   return t * 100.0f;
 }
 
-// Umidade do solo em % (0 = seco, 100 = bem molhado)
-// Como o sensor aumenta ADC quando seca, usamos invert=true no intervalo [SOIL_WET_ADC..SOIL_DRY_ADC]
 static float soilPercent(int soilAdc) {
   return percentFromRange(soilAdc, SOIL_WET_ADC, SOIL_DRY_ADC, true);
 }
 
-// Luminosidade em % (0 = escuro, 100 = claro) — inverter se necessário
 static float ldrPercent(int ldrAdc) {
   return percentFromRange(ldrAdc, 0, ADC_MAX, LDR_INVERT);
 }
 
-// Converte o limiar de ADC do solo para % (para mostrar na mensagem)
-static float soilThresholdPercent() {
-  return soilPercent(SOLO_SECO_LIMITE);
+static void setPump(bool on) {
+  digitalWrite(RELAY_PUMP_PIN, on ? HIGH : LOW);
+  pumpOn = on;
+  if (on) pumpStartedAt = millis();
 }
 
-// Formata ON/OFF bonitinho
-static const char* onoff(bool v) {
-  return v ? "LIGADO" : "DESLIGADO";
+static void setFan(bool on) {
+  digitalWrite(RELAY_FAN_PIN, on ? HIGH : LOW);
+  fanOn = on;
+  lastFanSwitchAt = millis();
 }
 
-// ==================== Setup ====================
-void setup() {
-  Serial.begin(115200);
-  Serial.setDebugOutput(true);
-  Serial.println();
+static bool wifiEnsureConnected(uint32_t timeoutMs) {
+  if (WiFi.status() == WL_CONNECTED) return true;
 
-  // ========== CONFIGURANDO A CÂMERA ==========
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - t0) < timeoutMs) {
+    delay(250);
+  }
+  return WiFi.status() == WL_CONNECTED;
+}
+
+static String httpReadAll(WiFiClient &client, uint32_t timeoutMs) {
+  String out;
+  uint32_t t0 = millis();
+  while ((millis() - t0) < timeoutMs) {
+    while (client.available()) {
+      char c = (char)client.read();
+      out += c;
+      t0 = millis();
+    }
+    if (!client.connected()) break;
+    delay(5);
+  }
+  return out;
+}
+
+static String extractBody(const String &raw) {
+  int idx = raw.indexOf("\r\n\r\n");
+  if (idx < 0) return String();
+  return raw.substring(idx + 4);
+}
+
+static String postImageToInference(const uint8_t *jpeg, size_t jpegLen, uint32_t &httpCodeOut) {
+  httpCodeOut = 0;
+
+  WiFiClient client;
+  if (!client.connect(INFER_HOST, INFER_PORT)) {
+    return String("{\"erro\":\"connect_failed\"}");
+  }
+
+  const String boundary = "----esp32s3boundary7MA4YWxkTrZu0gW";
+  const String head =
+      "--" + boundary + "\r\n"
+      "Content-Disposition: form-data; name=\"image\"; filename=\"frame.jpg\"\r\n"
+      "Content-Type: image/jpeg\r\n\r\n";
+
+  const String tail = "\r\n--" + boundary + "--\r\n";
+  const size_t contentLength = head.length() + jpegLen + tail.length();
+
+  client.print(String("POST ") + INFER_PATH + " HTTP/1.1\r\n");
+  client.print(String("Host: ") + INFER_HOST + ":" + String(INFER_PORT) + "\r\n");
+  client.print("Connection: close\r\n");
+  client.print(String("Content-Type: multipart/form-data; boundary=") + boundary + "\r\n");
+  client.print(String("Content-Length: ") + String(contentLength) + "\r\n\r\n");
+
+  client.print(head);
+
+  const uint8_t *p = jpeg;
+  size_t remaining = jpegLen;
+  while (remaining > 0) {
+    size_t chunk = remaining > 1460 ? 1460 : remaining;
+    client.write(p, chunk);
+    p += chunk;
+    remaining -= chunk;
+    delay(0);
+  }
+
+  client.print(tail);
+
+  String raw = httpReadAll(client, 8000);
+
+  int sp = raw.indexOf(' ');
+  if (sp > 0) {
+    int sp2 = raw.indexOf(' ', sp + 1);
+    if (sp2 > sp) httpCodeOut = (uint32_t)raw.substring(sp + 1, sp2).toInt();
+  }
+
+  String body = extractBody(raw);
+  body.trim();
+  if (body.length() == 0) body = String("{\"erro\":\"empty_response\"}");
+  return body;
+}
+
+static camera_fb_t *captureJpeg() {
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) return nullptr;
+  if (fb->format != PIXFORMAT_JPEG) {
+    esp_camera_fb_return(fb);
+    return nullptr;
+  }
+  return fb;
+}
+
+static esp_err_t handleRoot(httpd_req_t *req) {
+  const char *html =
+      "<!doctype html><html><head><meta charset='utf-8'/>"
+      "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
+      "<title>ESP32-S3 Smart Tomato Garden</title></head><body>"
+      "<h2>ESP32-S3 Smart Tomato Garden</h2>"
+      "<ul>"
+      "<li><a href='/stream'>/stream</a></li>"
+      "<li><a href='/capture'>/capture</a></li>"
+      "<li><a href='/infer'>/infer</a></li>"
+      "<li><a href='/status'>/status</a></li>"
+      "</ul>"
+      "</body></html>";
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
+  return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t handleCapture(httpd_req_t *req) {
+  camera_fb_t *fb = captureJpeg();
+  if (!fb) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_send(req, "capture_failed", HTTPD_RESP_USE_STRLEN);
+  }
+  httpd_resp_set_type(req, "image/jpeg");
+  esp_err_t res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
+  esp_camera_fb_return(fb);
+  return res;
+}
+
+static esp_err_t handleStream(httpd_req_t *req) {
+  static const char *contentType = "multipart/x-mixed-replace;boundary=frame";
+  static const char *boundary = "\r\n--frame\r\n";
+  static const char *part = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
+
+  httpd_resp_set_type(req, contentType);
+
+  while (true) {
+    camera_fb_t *fb = captureJpeg();
+    if (!fb) break;
+
+    if (httpd_resp_send_chunk(req, boundary, strlen(boundary)) != ESP_OK) {
+      esp_camera_fb_return(fb);
+      break;
+    }
+
+    char hdr[64];
+    int hlen = snprintf(hdr, sizeof(hdr), part, (unsigned)fb->len);
+    if (httpd_resp_send_chunk(req, hdr, hlen) != ESP_OK) {
+      esp_camera_fb_return(fb);
+      break;
+    }
+
+    if (httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len) != ESP_OK) {
+      esp_camera_fb_return(fb);
+      break;
+    }
+
+    esp_camera_fb_return(fb);
+    delay(50);
+  }
+
+  httpd_resp_send_chunk(req, nullptr, 0);
+  return ESP_OK;
+}
+
+static esp_err_t handleInfer(httpd_req_t *req) {
+  if (WiFi.status() != WL_CONNECTED) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return httpd_resp_send(req, "{\"erro\":\"wifi_disconnected\"}", HTTPD_RESP_USE_STRLEN);
+  }
+
+  camera_fb_t *fb = captureJpeg();
+  if (!fb) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    return httpd_resp_send(req, "{\"erro\":\"capture_failed\"}", HTTPD_RESP_USE_STRLEN);
+  }
+
+  uint32_t code = 0;
+  uint32_t t0 = millis();
+  String body = postImageToInference(fb->buf, fb->len, code);
+  uint32_t dt = millis() - t0;
+
+  esp_camera_fb_return(fb);
+
+  httpd_resp_set_type(req, "application/json; charset=utf-8");
+
+  if (code < 200 || code >= 300) {
+    String err = String("{\"erro\":\"inference_http_error\",\"http_code\":") + String(code) +
+                 String(",\"elapsed_ms\":") + String(dt) +
+                 String(",\"body\":") + String("\"") + body + String("\"}") ;
+    return httpd_resp_send(req, err.c_str(), HTTPD_RESP_USE_STRLEN);
+  }
+
+  return httpd_resp_send(req, body.c_str(), HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t handleStatus(httpd_req_t *req) {
+  int soilAdc = analogRead(SOIL_SENSOR_PIN);
+  int ldrAdc = analogRead(LDR_PIN);
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+  bool dhtOk = !(isnan(t) || isnan(h));
+
+  String json = "{";
+  json += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
+  json += "\"soil_adc\":" + String(soilAdc) + ",";
+  json += "\"soil_pct\":" + String(soilPercent(soilAdc), 1) + ",";
+  json += "\"ldr_adc\":" + String(ldrAdc) + ",";
+  json += "\"light_pct\":" + String(ldrPercent(ldrAdc), 1) + ",";
+  json += "\"temp_c\":" + String(dhtOk ? t : -1.0f, 1) + ",";
+  json += "\"humidity_pct\":" + String(dhtOk ? h : -1.0f, 1) + ",";
+  json += "\"pump_on\":" + String(pumpOn ? "true" : "false") + ",";
+  json += "\"fan_on\":" + String(fanOn ? "true" : "false");
+  json += "}";
+
+  httpd_resp_set_type(req, "application/json; charset=utf-8");
+  return httpd_resp_send(req, json.c_str(), HTTPD_RESP_USE_STRLEN);
+}
+
+static void startCameraServer() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
+  config.stack_size = 8192;
+
+  if (httpd_start(&httpServer, &config) != ESP_OK) {
+    httpServer = nullptr;
+    return;
+  }
+
+  httpd_uri_t uriRoot = { .uri = "/", .method = HTTP_GET, .handler = handleRoot, .user_ctx = nullptr };
+  httpd_uri_t uriStream = { .uri = "/stream", .method = HTTP_GET, .handler = handleStream, .user_ctx = nullptr };
+  httpd_uri_t uriCapture = { .uri = "/capture", .method = HTTP_GET, .handler = handleCapture, .user_ctx = nullptr };
+  httpd_uri_t uriInfer = { .uri = "/infer", .method = HTTP_GET, .handler = handleInfer, .user_ctx = nullptr };
+  httpd_uri_t uriStatus = { .uri = "/status", .method = HTTP_GET, .handler = handleStatus, .user_ctx = nullptr };
+
+  httpd_register_uri_handler(httpServer, &uriRoot);
+  httpd_register_uri_handler(httpServer, &uriStream);
+  httpd_register_uri_handler(httpServer, &uriCapture);
+  httpd_register_uri_handler(httpServer, &uriInfer);
+  httpd_register_uri_handler(httpServer, &uriStatus);
+}
+
+static void initCamera() {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -117,7 +361,6 @@ void setup() {
   config.fb_count = 2;
 
   if (!psramFound()) {
-    Serial.println("PSRAM não detectada. Ajustando parâmetros de câmera...");
     config.frame_size = FRAMESIZE_SVGA;
     config.fb_location = CAMERA_FB_IN_DRAM;
     config.fb_count = 1;
@@ -127,104 +370,170 @@ void setup() {
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Falha ao iniciar câmera. Código de erro: 0x%x\n", err);
-    return;
+    delay(2000);
+    ESP.restart();
   }
 
   sensor_t *s = esp_camera_sensor_get();
-  s->set_vflip(s, 1);  // Corrige orientação (se precisar, ajuste para 0)
-
-  // ========== INICIALIZAÇÃO DOS SENSORES ==========
-  dht.begin();
-  pinMode(RELAY_BOMBA_PIN, OUTPUT);
-  pinMode(RELAY_VENTOINHA_PIN, OUTPUT);
-  pinMode(LDR_PIN, INPUT);
-  digitalWrite(RELAY_BOMBA_PIN, LOW);      // bomba desligada
-  digitalWrite(RELAY_VENTOINHA_PIN, LOW);  // ventoinha desligada
-
-  // ========== CONEXÃO WI-FI ==========
-  WiFi.begin(ssid, password);
-  WiFi.setSleep(false);
-
-  Serial.print("Conectando ao Wi-Fi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  if (s) {
+    s->set_vflip(s, 1);
   }
-  Serial.println("\nWi-Fi conectado!");
-  Serial.print("Acesse: http://");
-  Serial.println(WiFi.localIP());
-
-  startCameraServer();
 }
 
-// ==================== Loop ====================
+static void initIO() {
+  dht.begin();
+
+  pinMode(RELAY_PUMP_PIN, OUTPUT);
+  pinMode(RELAY_FAN_PIN, OUTPUT);
+
+  digitalWrite(RELAY_PUMP_PIN, LOW);
+  digitalWrite(RELAY_FAN_PIN, LOW);
+
+  setAnalogReadResolution(12);
+  analogSetAttenuation(ADC_11db);
+  pinMode(LDR_PIN, INPUT);
+  pinMode(SOIL_SENSOR_PIN, INPUT);
+}
+
+static void controlPumpThreshold(int soilAdc, uint32_t now) {
+  if (pumpOn) {
+    if ((now - pumpStartedAt) >= IRRIGATION_PULSE_MS) {
+      setPump(false);
+      lastIrrigationAt = now;
+    }
+    return;
+  }
+
+  if (soilAdc < SOIL_REARM_ADC) soilRearmed = true;
+
+  if (!soilRearmed) return;
+  if ((now - lastIrrigationAt) < IRRIGATION_COOLDOWN_MS) return;
+
+  if (soilAdc >= SOIL_ON_ADC) {
+    soilRearmed = false;
+    setPump(true);
+  }
+}
+
+static void controlPumpCyclic(uint32_t now) {
+  if (pumpOn) {
+    if ((now - pumpStartedAt) >= CYCLE_PULSE_MS) {
+      setPump(false);
+    }
+    return;
+  }
+
+  if ((now - lastCycleAt) >= CYCLE_PERIOD_MS) {
+    lastCycleAt = now;
+    setPump(true);
+  }
+}
+
+static void controlFan(float tempC, bool tempValid, uint32_t now) {
+  if (!tempValid) return;
+  if ((now - lastFanSwitchAt) < FAN_MIN_SWITCH_MS) return;
+
+  if (!fanOn && tempC >= FAN_ON_TEMP_C) {
+    setFan(true);
+    return;
+  }
+  if (fanOn && tempC <= FAN_OFF_TEMP_C) {
+    setFan(false);
+    return;
+  }
+}
+
+static void logStatus(uint32_t now, int soilAdc, int ldrAdc, float tempC, float humPct, bool dhtOk) {
+  Serial.print("t=");
+  Serial.print(now / 1000UL);
+  Serial.print("s,soil_adc=");
+  Serial.print(soilAdc);
+  Serial.print(",soil_pct=");
+  Serial.print(soilPercent(soilAdc), 1);
+  Serial.print(",ldr_adc=");
+  Serial.print(ldrAdc);
+  Serial.print(",light_pct=");
+  Serial.print(ldrPercent(ldrAdc), 1);
+  Serial.print(",temp_c=");
+  Serial.print(dhtOk ? String(tempC, 1) : String("nan"));
+  Serial.print(",hum_pct=");
+  Serial.print(dhtOk ? String(humPct, 1) : String("nan"));
+  Serial.print(",pump=");
+  Serial.print(pumpOn ? "1" : "0");
+  Serial.print(",fan=");
+  Serial.println(fanOn ? "1" : "0");
+}
+
+static void periodicInference(uint32_t now) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  if ((now - lastInferAt) < INFER_PERIOD_MS) return;
+
+  camera_fb_t *fb = captureJpeg();
+  if (!fb) return;
+
+  uint32_t code = 0;
+  uint32_t t0 = millis();
+  String body = postImageToInference(fb->buf, fb->len, code);
+  uint32_t dt = millis() - t0;
+
+  esp_camera_fb_return(fb);
+
+  Serial.print("infer_http=");
+  Serial.print(code);
+  Serial.print(",elapsed_ms=");
+  Serial.print(dt);
+  Serial.print(",body=");
+  Serial.println(body);
+
+  lastInferAt = now;
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.setDebugOutput(false);
+
+  initIO();
+  initCamera();
+
+  wifiEnsureConnected(20000);
+
+  startCameraServer();
+
+  lastSensorAt = millis();
+  lastInferAt = millis();
+  lastIrrigationAt = millis();
+  lastCycleAt = millis();
+  lastFanSwitchAt = millis();
+}
+
 void loop() {
-  // ====== LEITURA DOS SENSORES ======
-  int soilAdc = analogRead(SOIL_SENSOR_PIN);
-  int ldrAdc  = analogRead(LDR_PIN);
-  float temp  = dht.readTemperature();
-  float humi  = dht.readHumidity();
+  uint32_t now = millis();
 
-  // Tratamento de leituras inválidas do DHT
-  bool dhtOk = !(isnan(temp) || isnan(humi));
-
-  // Converte para porcentagens amigáveis
-  float soloPct = soilPercent(soilAdc);
-  float soloPctLimiar = soilThresholdPercent();
-  float luzPct  = ldrPercent(ldrAdc);
-  float arPct   = dhtOk ? humi : -1;
-
-  // ====== BLOCO DE STATUS AMIGÁVEL ======
-  Serial.println();
-  Serial.println(F("────────────────────────────────────────"));
-  Serial.printf("⏱  Uptime: %lus\n", millis() / 1000UL);
-  Serial.println(F("📊 Status do Sistema"));
-  Serial.println(F("────────────────────────────────────────"));
-  Serial.printf("🌱 Solo: %.1f%% umidade (ADC=%d) | Limiar p/ irrigar: %.1f%% (ADC>%d)\n",
-                soloPct, soilAdc, soloPctLimiar, SOLO_SECO_LIMITE);
-  Serial.printf("💡 Luz:  %.1f%% (ADC=%d) %s\n",
-                luzPct, ldrAdc, LDR_INVERT ? "(invertido p/ % claro)" : "");
-  if (dhtOk) {
-    Serial.printf("🌡  Ar:   %.1f°C | 💧 Umidade: %.1f%%\n", temp, arPct);
-  } else {
-    Serial.println("🌡  Ar:   (falha de leitura do DHT) — tentando novamente no próximo ciclo");
-  }
-  Serial.printf("⚙️  Bomba: %s | Ventoinha: %s\n", onoff(bombaLigada), onoff(ventoinhaLigada));
-  Serial.println(F("────────────────────────────────────────"));
-
-  // ====== CONTROLE DA BOMBA (baseado no limiar ADC existente) ======
-  if (!bombaLigada && soilAdc > SOLO_SECO_LIMITE) {
-    Serial.printf("🚿 Solo seco (%.1f%% <= %.1f%%). Bomba LIGADA por 1 s...\n",
-                  soloPct, soloPctLimiar);
-    digitalWrite(RELAY_BOMBA_PIN, HIGH);
-    bombaLigada = true;
-    tempoInicioIrrigacao = millis();
+  if (WiFi.status() != WL_CONNECTED) {
+    wifiEnsureConnected(5000);
   }
 
-  if (bombaLigada && millis() - tempoInicioIrrigacao >= TEMPO_IRRIGACAO_MS) {
-    digitalWrite(RELAY_BOMBA_PIN, LOW);
-    bombaLigada = false;
-    Serial.println("✅ Irrigação concluída. Bomba DESLIGADA.");
-  }
+  if ((now - lastSensorAt) >= SENSOR_PERIOD_MS) {
+    lastSensorAt = now;
 
-  // ====== CONTROLE DA VENTOINHA (histerese simples) ======
-  if (dhtOk) {
-    if (!ventoinhaLigada && temp >= TEMP_MAXIMA_VENTOINHA) {
-      digitalWrite(RELAY_VENTOINHA_PIN, HIGH);
-      ventoinhaLigada = true;
-      Serial.printf("🌀 Temperatura alta (%.1f°C ≥ %.1f°C). Ventoinha LIGADA.\n",
-                    temp, TEMP_MAXIMA_VENTOINHA);
+    int soilAdc = analogRead(SOIL_SENSOR_PIN);
+    int ldrAdc = analogRead(LDR_PIN);
+
+    float tempC = dht.readTemperature();
+    float humPct = dht.readHumidity();
+    bool dhtOk = !(isnan(tempC) || isnan(humPct));
+
+    if (ENABLE_TIME_CYCLE_MODE) {
+      controlPumpCyclic(now);
+    } else {
+      controlPumpThreshold(soilAdc, now);
     }
 
-    if (ventoinhaLigada && temp <= TEMP_DESLIGAR_VENTOINHA) {
-      digitalWrite(RELAY_VENTOINHA_PIN, LOW);
-      ventoinhaLigada = false;
-      Serial.printf("🧊 Temperatura normalizada (%.1f°C ≤ %.1f°C). Ventoinha DESLIGADA.\n",
-                    temp, TEMP_DESLIGAR_VENTOINHA);
-    }
+    controlFan(tempC, dhtOk, now);
+    logStatus(now, soilAdc, ldrAdc, tempC, humPct, dhtOk);
   }
 
-  // Intervalo entre ciclos de leitura/controle
-  delay(5000);
+  periodicInference(now);
+
+  delay(10);
 }
