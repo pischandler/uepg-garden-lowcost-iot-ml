@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Smart Tomato</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+    header { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+    h1 { font-size: 18px; margin: 0; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (min-width: 900px) { .grid { grid-template-columns: 2fr 1fr; } }
+    .card { border: 1px solid rgba(127,127,127,.35); border-radius: 12px; padding: 12px; }
+    img { width: 100%; height: auto; border-radius: 10px; border: 1px solid rgba(127,127,127,.35); }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button, input, select { font: inherit; }
+    button { padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,.45); background: transparent; cursor: pointer; }
+    button:active { transform: translateY(1px); }
+    input[type="range"] { width: 180px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .k { opacity: .8; }
+    .v { font-weight: 600; }
+    .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 10px; }
+    .pill { display: inline-flex; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(127,127,127,.35); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Smart Tomato</h1>
+    <span class="pill"><span class="k">Device</span><code id="device">...</code></span>
+    <span class="pill"><span class="k">IP</span><code id="ip">...</code></span>
+    <span class="pill"><span class="k">RSSI</span><code id="rssi">...</code></span>
+  </header>
+
+  <div class="grid" style="margin-top:12px">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <strong>Câmera</strong>
+        <div class="row">
+          <button id="btnStream">Stream</button>
+          <button id="btnSnap">Capturar</button>
+          <button id="btnHealth">Health</button>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <img id="view" alt="stream" src="/stream">
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="row"><span class="k">Quality</span><input id="quality" type="range" min="10" max="63" step="1"><code id="qualityV"></code></label>
+        <label class="row"><span class="k">Framesize</span>
+          <select id="framesize">
+            <option value="5">QVGA (320x240)</option>
+            <option value="8">VGA (640x480)</option>
+            <option value="9">SVGA (800x600)</option>
+            <option value="10">XGA (1024x768)</option>
+            <option value="12">UXGA (1600x1200)</option>
+          </select>
+        </label>
+        <label class="row"><span class="k">LED</span><input id="led" type="range" min="0" max="255" step="1"><code id="ledV"></code></label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <strong>Sensores</strong>
+        <div class="row">
+          <button id="btnSensors">Atualizar</button>
+          <button id="btnIrrigate">Irrigar 1500ms</button>
+          <button id="btnStop">Parar</button>
+        </div>
+      </div>
+
+      <div class="kv" style="margin-top:10px">
+        <div class="k">Solo (raw)</div><div class="v" id="soilRaw">...</div>
+        <div class="k">Solo (%)</div><div class="v" id="soilPct">...</div>
+        <div class="k">Lux (raw)</div><div class="v" id="luxRaw">...</div>
+        <div class="k">Temp (°C)</div><div class="v" id="tempC">...</div>
+        <div class="k">Umidade (%)</div><div class="v" id="humPct">...</div>
+        <div class="k">DHT OK</div><div class="v" id="dhtOk">...</div>
+        <div class="k">Bomba</div><div class="v" id="pumpOn">...</div>
+      </div>
+
+      <div style="margin-top:12px">
+        <details>
+          <summary>JSON</summary>
+          <pre id="json" style="white-space:pre-wrap;word-break:break-word;margin:10px 0 0">...</pre>
+        </details>
+      </div>
+    </div>
+  </div>
+
+<script>
+const el = (id) => document.getElementById(id);
+
+async function jget(path) {
+  const r = await fetch(path, { cache: "no-store" });
+  if (!r.ok) throw new Error(path + " " + r.status);
+  return r.json();
+}
+
+async function jpost(path, body) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {})
+  });
+  if (!r.ok) throw new Error(path + " " + r.status);
+  return r.json();
+}
+
+async function textget(path) {
+  const r = await fetch(path, { cache: "no-store" });
+  if (!r.ok) throw new Error(path + " " + r.status);
+  return r.text();
+}
+
+function setStream(on) {
+  el("view").src = on ? "/stream" : "/capture";
+  el("btnStream").textContent = on ? "Pausar" : "Stream";
+}
+
+async function refreshHealth() {
+  const h = await jget("/health");
+  el("ip").textContent = h.ip;
+  el("rssi").textContent = h.rssi;
+  el("device").textContent = (h.device_id || "");
+}
+
+async function refreshSensors() {
+  const s = await jget("/api/sensors");
+  const i = await jget("/api/irrigation");
+  el("soilRaw").textContent = s.soil_raw;
+  el("soilPct").textContent = (Number(s.soil_pct).toFixed(2)) + "%";
+  el("luxRaw").textContent = s.lux_raw;
+  el("tempC").textContent = Number(s.temp_c).toFixed(2);
+  el("humPct").textContent = Number(s.hum_pct).toFixed(2);
+  el("dhtOk").textContent = s.dht_ok ? "true" : "false";
+  el("pumpOn").textContent = i.pump_on ? "ON" : "OFF";
+  el("json").textContent = JSON.stringify({ sensors: s, irrigation: i }, null, 2);
+}
+
+async function refreshCameraStatus() {
+  const st = await jget("/status");
+  el("quality").value = st.quality;
+  el("qualityV").textContent = st.quality;
+  el("framesize").value = st.framesize;
+  el("led").value = st.led_intensity;
+  el("ledV").textContent = st.led_intensity;
+}
+
+async function control(varName, val) {
+  const q = encodeURIComponent(varName);
+  const v = encodeURIComponent(String(val));
+  await textget("/control?var=" + q + "&val=" + v);
+}
+
+let streaming = true;
+
+el("btnStream").addEventListener("click", async () => {
+  streaming = !streaming;
+  setStream(streaming);
+});
+
+el("btnSnap").addEventListener("click", async () => {
+  const r = await fetch("/capture", { cache: "no-store" });
+  const b = await r.blob();
+  const u = URL.createObjectURL(b);
+  window.open(u, "_blank");
+});
+
+el("btnHealth").addEventListener("click", async () => {
+  await refreshHealth();
+  alert(await (await fetch("/health")).text());
+});
+
+el("btnSensors").addEventListener("click", refreshSensors);
+
+el("btnIrrigate").addEventListener("click", async () => {
+  await jpost("/api/irrigation/start", { ms: 1500 });
+  await refreshSensors();
+});
+
+el("btnStop").addEventListener("click", async () => {
+  await jpost("/api/irrigation/stop", {});
+  await refreshSensors();
+});
+
+el("quality").addEventListener("input", () => el("qualityV").textContent = el("quality").value);
+el("led").addEventListener("input", () => el("ledV").textContent = el("led").value);
+
+el("quality").addEventListener("change", async () => {
+  await control("quality", el("quality").value);
+});
+el("framesize").addEventListener("change", async () => {
+  await control("framesize", el("framesize").value);
+});
+el("led").addEventListener("change", async () => {
+  await control("led_intensity", el("led").value);
+});
+
+async function boot() {
+  setStream(true);
+  await refreshHealth();
+  await refreshCameraStatus();
+  await refreshSensors();
+  setInterval(() => refreshSensors().catch(()=>{}), 2500);
+  setInterval(() => refreshHealth().catch(()=>{}), 7000);
+}
+
+boot().catch(e => { el("json").textContent = String(e); });
+</script>
+</body>
+</html>
