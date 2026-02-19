@@ -1,0 +1,40 @@
+# Ignore tudo por padrão
+**
+
+# Permite apenas a pasta ml (que é o que o Dockerfile usa)
+!ml/**
+!docker-compose.yml
+
+# Opcional: permitir docs se você quiser dentro da imagem (normalmente não precisa)
+#!docs/**
+
+# Segurança/ambiente
+.env
+.env.*
+**/secrets.h
+**/secrets.*.h
+
+# Venv / caches
+.venv/
+venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Repositório / CI / firmware / datasets / outputs (evita mandar isso no build context)
+.git/
+.github/
+firmware/
+tools/
+docs/
+dataset/
+dataset_aug/
+reports/
+ml/reports/
+mlruns/
+wandb/
+salvas/
+outputs/
+runs/
+logs/
