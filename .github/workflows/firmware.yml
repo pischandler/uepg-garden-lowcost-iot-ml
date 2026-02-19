@@ -1,0 +1,30 @@
+name: firmware
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: pip install -U platformio
+
+      - name: Build
+        run: pio run -d firmware/smart-tomato-garden
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-tomato-garden-firmware
+          path: |
+            firmware/smart-tomato-garden/.pio/build/esp32-s3-devkitc-1/firmware.bin
+            firmware/smart-tomato-garden/.pio/build/esp32-s3-devkitc-1/firmware.elf
