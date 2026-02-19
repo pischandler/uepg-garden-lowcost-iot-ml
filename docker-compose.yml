@@ -1,0 +1,22 @@
+services:
+  garden-ml-api:
+    build:
+      context: .
+      dockerfile: ml/Dockerfile
+    container_name: garden-ml-api
+    environment:
+      - GML_LOG_LEVEL=INFO
+      - GML_SAVE_DEBUG=0
+      - GML_ARTIFACTS_DIR=/app/ml/artifacts/model_registry/v0001
+      - GML_HOST=0.0.0.0
+      - GML_PORT=5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./ml/artifacts/model_registry:/app/ml/artifacts/model_registry
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
