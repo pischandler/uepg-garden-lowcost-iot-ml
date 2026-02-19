@@ -1,0 +1,6 @@
+{
+  "project_dir": "firmware/smart-tomato-garden",
+  "envs": [
+    "esp32-s3-devkitc-1"
+  ]
+}
