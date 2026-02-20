@@ -2,9 +2,20 @@
 #include "hash_dispatch.h"
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include <cstring>
 
 static Preferences prefs;
 static RuntimeConfig cfg;
+
+static void setStr(char *dst, size_t cap, const char *src)
+{
+  if (!dst || cap == 0)
+    return;
+  if (!src)
+    src = "";
+  std::strncpy(dst, src, cap - 1);
+  dst[cap - 1] = 0;
+}
 
 static RuntimeConfig defaults()
 {
@@ -24,6 +35,15 @@ static RuntimeConfig defaults()
 
   d.store_events = true;
   d.telemetry_enabled = true;
+
+  d.infer_enabled = false;
+  d.infer_skip_when_streaming = true;
+  d.infer_period_ms = 10UL * 60UL * 1000UL;
+
+  setStr(d.infer_host, sizeof(d.infer_host), ML_API_HOST);
+  d.infer_port = ML_API_PORT;
+  setStr(d.infer_path, sizeof(d.infer_path), ML_API_PATH);
+
   return d;
 }
 
@@ -47,6 +67,16 @@ void ConfigStore::begin()
 
   cfg.store_events = prefs.getBool("store_ev", cfg.store_events);
   cfg.telemetry_enabled = prefs.getBool("tele_en", cfg.telemetry_enabled);
+
+  cfg.infer_enabled = prefs.getBool("inf_en", cfg.infer_enabled);
+  cfg.infer_skip_when_streaming = prefs.getBool("inf_sws", cfg.infer_skip_when_streaming);
+  cfg.infer_period_ms = prefs.getULong("inf_per", cfg.infer_period_ms);
+
+  String host = prefs.getString("inf_h", cfg.infer_host);
+  String path = prefs.getString("inf_p", cfg.infer_path);
+  setStr(cfg.infer_host, sizeof(cfg.infer_host), host.c_str());
+  setStr(cfg.infer_path, sizeof(cfg.infer_path), path.c_str());
+  cfg.infer_port = prefs.getUShort("inf_pt", cfg.infer_port);
 }
 
 RuntimeConfig ConfigStore::get()
@@ -58,6 +88,7 @@ static void persistKeyU16(const char *key, uint16_t v) { prefs.putUShort(key, v)
 static void persistKeyU32(const char *key, uint32_t v) { prefs.putULong(key, v); }
 static void persistKeyU8(const char *key, uint8_t v) { prefs.putUChar(key, v); }
 static void persistKeyB(const char *key, bool v) { prefs.putBool(key, v); }
+static void persistKeyS(const char *key, const char *v) { prefs.putString(key, v ? v : ""); }
 
 static bool applyKey(const char *k, JsonVariant v)
 {
@@ -109,6 +140,36 @@ static bool applyKey(const char *k, JsonVariant v)
     cfg.telemetry_enabled = v.as<bool>();
     persistKeyB("tele_en", cfg.telemetry_enabled);
     return true;
+  case HKEY("infer_enabled"):
+    cfg.infer_enabled = v.as<bool>();
+    persistKeyB("inf_en", cfg.infer_enabled);
+    return true;
+  case HKEY("infer_skip_when_streaming"):
+    cfg.infer_skip_when_streaming = v.as<bool>();
+    persistKeyB("inf_sws", cfg.infer_skip_when_streaming);
+    return true;
+  case HKEY("infer_period_ms"):
+    cfg.infer_period_ms = (uint32_t)v.as<uint32_t>();
+    persistKeyU32("inf_per", cfg.infer_period_ms);
+    return true;
+  case HKEY("infer_host"):
+  {
+    const char *s = v.as<const char *>();
+    setStr(cfg.infer_host, sizeof(cfg.infer_host), s);
+    persistKeyS("inf_h", cfg.infer_host);
+    return true;
+  }
+  case HKEY("infer_port"):
+    cfg.infer_port = (uint16_t)v.as<int>();
+    persistKeyU16("inf_pt", cfg.infer_port);
+    return true;
+  case HKEY("infer_path"):
+  {
+    const char *s = v.as<const char *>();
+    setStr(cfg.infer_path, sizeof(cfg.infer_path), s);
+    persistKeyS("inf_p", cfg.infer_path);
+    return true;
+  }
   default:
     return false;
   }
@@ -116,7 +177,7 @@ static bool applyKey(const char *k, JsonVariant v)
 
 void ConfigStore::setPartialJson(const char *json)
 {
-  StaticJsonDocument<768> doc;
+  StaticJsonDocument<1024> doc;
   auto err = deserializeJson(doc, json);
   if (err)
     return;
@@ -129,7 +190,7 @@ void ConfigStore::setPartialJson(const char *json)
 
 String ConfigStore::toJson()
 {
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<896> doc;
   doc["soil_dry_threshold_pct"] = cfg.soil_dry_threshold_pct;
   doc["pump_on_ms"] = cfg.pump_on_ms;
   doc["pump_cooldown_ms"] = cfg.pump_cooldown_ms;
@@ -141,6 +202,12 @@ String ConfigStore::toJson()
   doc["cam_framesize"] = cfg.cam_framesize;
   doc["store_events"] = cfg.store_events;
   doc["telemetry_enabled"] = cfg.telemetry_enabled;
+  doc["infer_enabled"] = cfg.infer_enabled;
+  doc["infer_skip_when_streaming"] = cfg.infer_skip_when_streaming;
+  doc["infer_period_ms"] = cfg.infer_period_ms;
+  doc["infer_host"] = cfg.infer_host;
+  doc["infer_port"] = cfg.infer_port;
+  doc["infer_path"] = cfg.infer_path;
   String out;
   serializeJson(doc, out);
   return out;

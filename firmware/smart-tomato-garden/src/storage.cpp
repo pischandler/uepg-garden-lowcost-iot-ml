@@ -3,6 +3,7 @@
 #include <LittleFS.h>
 
 static const char *EVENTS_PATH = "/events.log";
+static const char *INFER_CSV_PATH = "/inference.csv";
 static uint32_t lastFlushMs = 0;
 
 void Storage::begin()
@@ -44,6 +45,30 @@ String Storage::drainEvents(size_t maxBytes)
   f.close();
   LittleFS.remove(EVENTS_PATH);
   return out;
+}
+
+static void ensureCsvHeader()
+{
+  if (LittleFS.exists(INFER_CSV_PATH))
+    return;
+  File f = LittleFS.open(INFER_CSV_PATH, "w");
+  if (!f)
+    return;
+  f.println("ts_unix,ts_ms,device_id,ip,rssi,ok,http_status,latency_ms,predicted,confidence,soil_pct,soil_raw,lux_raw,temp_c,hum_pct,dht_ok,pump_on");
+  f.close();
+}
+
+void Storage::appendInferenceCsv(const char *line)
+{
+  ensureCsvHeader();
+  File f = LittleFS.open(INFER_CSV_PATH, "a");
+  if (!f)
+    return;
+  if (line && strlen(line))
+    f.println(line);
+  f.close();
+  if (f.size() > (2UL * 1024UL * 1024UL))
+    LittleFS.remove(INFER_CSV_PATH);
 }
 
 void Storage::loop()

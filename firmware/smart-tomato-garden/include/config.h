@@ -35,16 +35,7 @@ static const uint32_t CAMERA_STREAM_FPS = 12;
 static const uint8_t CAMERA_JPEG_QUALITY = 12;
 static const uint16_t CAMERA_STREAM_CHUNK = 1460;
 
-static const char *UI_HTML =
-    "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>Smart Tomato</title></head><body style='font-family:system-ui;margin:16px'>"
-    "<h3>Smart Tomato</h3>"
-    "<div><img id=v style='max-width:100%;border:1px solid #ddd' src='/stream'></div>"
-    "<div style='margin-top:12px'>"
-    "<button onclick=\"fetch('/capture').then(r=>r.blob()).then(b=>{let u=URL.createObjectURL(b);window.open(u,'_blank')})\">Capture</button>"
-    "<button onclick=\"fetch('/health').then(r=>r.json()).then(j=>alert(JSON.stringify(j,null,2)))\">Health</button>"
-    "<button onclick=\"fetch('/api/sensors').then(r=>r.json()).then(j=>alert(JSON.stringify(j,null,2)))\">Sensors</button>"
-    "</div></body></html>";
+static const uint32_t INFER_HTTP_TIMEOUT_MS = 9000;
 
 struct RuntimeConfig
 {
@@ -63,6 +54,14 @@ struct RuntimeConfig
 
   bool store_events;
   bool telemetry_enabled;
+
+  bool infer_enabled;
+  bool infer_skip_when_streaming;
+  uint32_t infer_period_ms;
+
+  char infer_host[64];
+  uint16_t infer_port;
+  char infer_path[64];
 };
 
 class ConfigStore

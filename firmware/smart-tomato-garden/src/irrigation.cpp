@@ -46,7 +46,7 @@ bool Irrigation::start(uint32_t ms)
   s.last_run_ms = millis();
   setState(s);
   pumpWrite(true);
-  Log::event("pump_start", {{"ms", (int)ms}});
+  Log::event("pump_start", {LI("ms", (int)ms)});
   return true;
 }
 
@@ -59,7 +59,7 @@ bool Irrigation::stop()
   s.pump_until_ms = 0;
   setState(s);
   pumpWrite(false);
-  Log::event("pump_stop", {{"ok", 1}});
+  Log::event("pump_stop", {LI("ok", 1)});
   return true;
 }
 

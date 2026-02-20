@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: ml/Dockerfile
+    platform: linux/amd64
     container_name: garden-ml-api
     environment:
       - GML_LOG_LEVEL=INFO
@@ -20,3 +21,19 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  garden-ml-dev:
+    build:
+      context: .
+      dockerfile: ml/Dockerfile
+    platform: linux/amd64
+    working_dir: /app
+    entrypoint: ["bash", "-lc"]
+    command: "python --version"
+    volumes:
+      - ./:/app
+      - ./ml/artifacts/model_registry:/app/ml/artifacts/model_registry
+      - ./tools/dataset:/app/dataset
+    environment:
+      - GML_LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1

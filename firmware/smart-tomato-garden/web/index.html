@@ -1,101 +1,423 @@
 <!doctype html>
-<html lang="pt-br">
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Smart Tomato</title>
+  <title>Smart Tomato Garden</title>
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
-    header { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
-    h1 { font-size: 18px; margin: 0; }
-    .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
-    @media (min-width: 900px) { .grid { grid-template-columns: 2fr 1fr; } }
-    .card { border: 1px solid rgba(127,127,127,.35); border-radius: 12px; padding: 12px; }
-    img { width: 100%; height: auto; border-radius: 10px; border: 1px solid rgba(127,127,127,.35); }
-    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-    button, input, select { font: inherit; }
-    button { padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(127,127,127,.45); background: transparent; cursor: pointer; }
+    :root {
+      --bg: #f4f7ef;
+      --panel: #fcfdf9;
+      --ink: #1f2a22;
+      --muted: #5b6a5f;
+      --line: #d6e0d2;
+      --brand: #2f8f48;
+      --brand-2: #cf462d;
+      --ok: #1f9d5b;
+      --warn: #d97c17;
+      --bad: #c83a2c;
+      --radius: 16px;
+      --shadow: 0 14px 40px rgba(20, 34, 22, 0.08);
+      --font-head: "Space Grotesk", "Manrope", "Segoe UI", sans-serif;
+      --font-body: "Manrope", "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: var(--font-body);
+      background:
+        radial-gradient(circle at 10% -10%, #d7f5dd 0%, transparent 40%),
+        radial-gradient(circle at 100% 0%, #ffe0d0 0%, transparent 38%),
+        var(--bg);
+      min-height: 100vh;
+    }
+
+    .shell {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 22px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .hero {
+      background: linear-gradient(120deg, #1f7a3d 0%, #2f8f48 48%, #be4e2a 100%);
+      color: #f8fff9;
+      border-radius: 20px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+      display: grid;
+      gap: 14px;
+    }
+
+    .heroTop {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.25rem, 1.3vw + 1rem, 1.9rem);
+      font-family: var(--font-head);
+      letter-spacing: 0.2px;
+    }
+
+    .subtitle { opacity: 0.9; font-size: 0.92rem; }
+
+    .pills {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 8px;
+    }
+
+    .pill {
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      padding: 7px 12px;
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 0.9rem;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr;
+      gap: 16px;
+    }
+
+    .stack { display: grid; gap: 16px; }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 14px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::after {
+      content: "";
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 2px;
+      background: linear-gradient(90deg, #5dbb72, #e47246);
+      opacity: 0.6;
+    }
+
+    .head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+
+    .head h2 {
+      margin: 0;
+      font-family: var(--font-head);
+      font-size: 1.05rem;
+    }
+
+    .status {
+      font-size: 0.84rem;
+      border: 1px solid var(--line);
+      background: #f6faf3;
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 3px 10px;
+    }
+
+    .status.ok { color: var(--ok); border-color: #a8dfbf; }
+    .status.warn { color: var(--warn); border-color: #f1cf9c; }
+    .status.bad { color: var(--bad); border-color: #efb6af; }
+
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .grow { flex: 1; }
+
+    button,
+    select,
+    input {
+      font: inherit;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      color: var(--ink);
+      padding: 8px 10px;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 600;
+      transition: transform .08s ease, box-shadow .15s ease;
+    }
+
+    button:hover { box-shadow: 0 4px 16px rgba(10, 22, 16, 0.08); }
     button:active { transform: translateY(1px); }
-    input[type="range"] { width: 180px; }
-    code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
-    .k { opacity: .8; }
-    .v { font-weight: 600; }
-    .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 10px; }
-    .pill { display: inline-flex; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(127,127,127,.35); }
+    button.brand { background: var(--brand); color: #fff; border-color: transparent; }
+    button.warn { background: #fff4ea; color: #8a4a0f; }
+    button.danger { background: #feeceb; color: #8f2018; }
+
+    input[type="range"] { accent-color: var(--brand); }
+
+    img {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: #edf3ea;
+      min-height: 220px;
+    }
+
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .kpi {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      background: #f8fbf6;
+    }
+
+    .k { color: var(--muted); font-size: 0.83rem; }
+    .v { font-weight: 700; font-size: 1.1rem; margin-top: 2px; }
+
+    .list {
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 10px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 0.92rem;
+      background: #f9fbf8;
+    }
+
+    .tiny { font-size: 0.82rem; color: var(--muted); }
+
+    .feed {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      max-height: 180px;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+    }
+
+    .feed li {
+      border: 1px solid var(--line);
+      border-left: 4px solid #6aae5a;
+      border-radius: 10px;
+      padding: 8px;
+      background: #fbfdf9;
+      font-size: 0.85rem;
+    }
+
+    details {
+      border: 1px dashed var(--line);
+      border-radius: 10px;
+      padding: 8px;
+      margin-top: 10px;
+      background: #fafdf8;
+    }
+
+    summary { cursor: pointer; font-weight: 600; }
+    pre {
+      margin: 8px 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.78rem;
+      color: #1e3a2d;
+      max-height: 220px;
+      overflow: auto;
+    }
+
+    .rightColFields { display: grid; gap: 8px; }
+
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: 1fr; }
+      .shell { padding: 14px; }
+      .meta { grid-template-columns: 1fr 1fr; }
+    }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Smart Tomato</h1>
-    <span class="pill"><span class="k">Device</span><code id="device">...</code></span>
-    <span class="pill"><span class="k">IP</span><code id="ip">...</code></span>
-    <span class="pill"><span class="k">RSSI</span><code id="rssi">...</code></span>
-  </header>
-
-  <div class="grid" style="margin-top:12px">
-    <div class="card">
-      <div class="row" style="justify-content:space-between">
-        <strong>Câmera</strong>
+  <main class="shell">
+    <section class="hero">
+      <div class="heroTop">
+        <div>
+          <h1>Smart Tomato Garden</h1>
+          <div class="subtitle">Painel de monitoramento, irrigacao e camera em tempo real</div>
+        </div>
         <div class="row">
-          <button id="btnStream">Stream</button>
-          <button id="btnSnap">Capturar</button>
-          <button id="btnHealth">Health</button>
+          <span class="status" id="onlineState">Conectando...</span>
+          <button id="btnRefresh" class="warn">Atualizar tudo</button>
         </div>
       </div>
-      <div style="margin-top:10px">
-        <img id="view" alt="stream" src="/stream">
+      <div class="pills">
+        <div class="pill"><span>Dispositivo</span><strong id="device">...</strong></div>
+        <div class="pill"><span>IP</span><strong id="ip">...</strong></div>
+        <div class="pill"><span>RSSI</span><strong id="rssi">...</strong></div>
+        <div class="pill"><span>Uptime</span><strong id="uptime">...</strong></div>
       </div>
-      <div class="row" style="margin-top:10px">
-        <label class="row"><span class="k">Quality</span><input id="quality" type="range" min="10" max="63" step="1"><code id="qualityV"></code></label>
-        <label class="row"><span class="k">Framesize</span>
-          <select id="framesize">
-            <option value="5">QVGA (320x240)</option>
-            <option value="8">VGA (640x480)</option>
-            <option value="9">SVGA (800x600)</option>
-            <option value="10">XGA (1024x768)</option>
-            <option value="12">UXGA (1600x1200)</option>
-          </select>
-        </label>
-        <label class="row"><span class="k">LED</span><input id="led" type="range" min="0" max="255" step="1"><code id="ledV"></code></label>
-      </div>
-    </div>
+    </section>
 
-    <div class="card">
-      <div class="row" style="justify-content:space-between">
-        <strong>Sensores</strong>
-        <div class="row">
-          <button id="btnSensors">Atualizar</button>
-          <button id="btnIrrigate">Irrigar 1500ms</button>
-          <button id="btnStop">Parar</button>
-        </div>
+    <section class="grid">
+      <div class="stack">
+        <article class="card">
+          <div class="head">
+            <h2>Camera</h2>
+            <div class="row">
+              <span class="status" id="streamState">Stream ativo</span>
+              <button id="btnStream" class="warn">Pausar stream</button>
+              <button id="btnSnap" class="brand">Capturar foto</button>
+            </div>
+          </div>
+          <img id="view" src="/stream" alt="camera stream">
+          <div class="meta">
+            <div class="kpi"><div class="k">Clientes no stream</div><div class="v" id="streamClients">0</div></div>
+            <div class="kpi"><div class="k">Capturas totais</div><div class="v" id="captureCount">0</div></div>
+          </div>
+          <div class="list">
+            <div class="item">
+              <label for="framesize">Resolucao</label>
+              <select id="framesize">
+                <option value="5">QVGA (320x240)</option>
+                <option value="6">CIF (400x296)</option>
+                <option value="8">VGA (640x480)</option>
+                <option value="9">SVGA (800x600)</option>
+                <option value="10">XGA (1024x768)</option>
+                <option value="12">UXGA (1600x1200)</option>
+              </select>
+            </div>
+            <div class="item">
+              <label for="quality">Qualidade JPEG</label>
+              <div class="row"><input id="quality" type="range" min="10" max="63" step="1"><strong id="qualityV">-</strong></div>
+            </div>
+            <div class="item">
+              <label for="led">LED da camera</label>
+              <div class="row"><input id="led" type="range" min="0" max="255" step="1"><strong id="ledV">-</strong></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="head">
+            <h2>Sensores do ambiente</h2>
+            <span class="status" id="sensorFresh">Lendo...</span>
+          </div>
+          <div class="meta">
+            <div class="kpi"><div class="k">Umidade do solo</div><div class="v" id="soilPct">...</div></div>
+            <div class="kpi"><div class="k">Solo bruto (ADC)</div><div class="v" id="soilRaw">...</div></div>
+            <div class="kpi"><div class="k">Luminosidade (ADC)</div><div class="v" id="luxRaw">...</div></div>
+            <div class="kpi"><div class="k">Temperatura</div><div class="v" id="tempC">...</div></div>
+            <div class="kpi"><div class="k">Umidade do ar</div><div class="v" id="humPct">...</div></div>
+            <div class="kpi"><div class="k">DHT22</div><div class="v" id="dhtOk">...</div></div>
+          </div>
+        </article>
       </div>
 
-      <div class="kv" style="margin-top:10px">
-        <div class="k">Solo (raw)</div><div class="v" id="soilRaw">...</div>
-        <div class="k">Solo (%)</div><div class="v" id="soilPct">...</div>
-        <div class="k">Lux (raw)</div><div class="v" id="luxRaw">...</div>
-        <div class="k">Temp (°C)</div><div class="v" id="tempC">...</div>
-        <div class="k">Umidade (%)</div><div class="v" id="humPct">...</div>
-        <div class="k">DHT OK</div><div class="v" id="dhtOk">...</div>
-        <div class="k">Bomba</div><div class="v" id="pumpOn">...</div>
-      </div>
+      <div class="stack">
+        <article class="card">
+          <div class="head">
+            <h2>Irrigacao</h2>
+            <span class="status" id="pumpState">Bomba desligada</span>
+          </div>
+          <div class="rightColFields">
+            <div class="item"><span>Modo automatico</span><strong id="autoMode">...</strong></div>
+            <div class="item"><span>Tempo restante da bomba</span><strong id="pumpRemaining">0 ms</strong></div>
+            <div class="item"><span>Cooldown restante</span><strong id="cooldownRemaining">0 ms</strong></div>
+            <div class="item"><span>Limiar de solo seco</span><strong id="dryThreshold">...</strong></div>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <input id="irrigationMs" type="number" min="200" max="30000" step="100" value="1500" class="grow">
+            <button id="btnIrrigate" class="brand">Irrigar agora</button>
+            <button id="btnStop" class="danger">Parar</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <button data-ms="1500" class="quick">1.5s</button>
+            <button data-ms="5000" class="quick">5s</button>
+            <button data-ms="10000" class="quick">10s</button>
+          </div>
+        </article>
 
-      <div style="margin-top:12px">
-        <details>
-          <summary>JSON</summary>
-          <pre id="json" style="white-space:pre-wrap;word-break:break-word;margin:10px 0 0">...</pre>
-        </details>
+        <article class="card">
+          <div class="head">
+            <h2>Saude e telemetria</h2>
+            <span class="tiny" id="lastSync">sem sincronizacao</span>
+          </div>
+          <div class="rightColFields">
+            <div class="item"><span>Heap livre</span><strong id="heap">...</strong></div>
+            <div class="item"><span>PSRAM livre</span><strong id="psram">...</strong></div>
+            <div class="item"><span>HTTP requests</span><strong id="httpCount">...</strong></div>
+            <div class="item"><span>Publicacoes MQTT</span><strong id="mqttPub">...</strong></div>
+            <div class="item"><span>Falhas MQTT</span><strong id="mqttFail">...</strong></div>
+            <div class="item"><span>Logs emitidos</span><strong id="logsCount">...</strong></div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="head">
+            <h2>Eventos recentes</h2>
+            <button id="btnRunInference">Rodar inferencia</button>
+          </div>
+          <ul class="feed" id="feed"></ul>
+          <details>
+            <summary>Ultima inferencia (JSON)</summary>
+            <pre id="inferenceJson">sem dados</pre>
+          </details>
+          <details>
+            <summary>Debug bruto</summary>
+            <pre id="rawJson">sem dados</pre>
+          </details>
+        </article>
       </div>
-    </div>
-  </div>
+    </section>
+  </main>
 
 <script>
-const el = (id) => document.getElementById(id);
+const $ = (id) => document.getElementById(id);
+const state = {
+  streaming: true,
+  feed: []
+};
+
+function pushFeed(msg) {
+  const time = new Date().toLocaleTimeString();
+  state.feed.unshift(`[${time}] ${msg}`);
+  state.feed = state.feed.slice(0, 12);
+  const ul = $("feed");
+  ul.innerHTML = "";
+  for (const line of state.feed) {
+    const li = document.createElement("li");
+    li.textContent = line;
+    ul.appendChild(li);
+  }
+}
 
 async function jget(path) {
   const r = await fetch(path, { cache: "no-store" });
-  if (!r.ok) throw new Error(path + " " + r.status);
+  if (!r.ok) throw new Error(`${path} ${r.status}`);
   return r.json();
 }
 
@@ -105,110 +427,199 @@ async function jpost(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {})
   });
-  if (!r.ok) throw new Error(path + " " + r.status);
+  if (!r.ok) throw new Error(`${path} ${r.status}`);
   return r.json();
 }
 
 async function textget(path) {
   const r = await fetch(path, { cache: "no-store" });
-  if (!r.ok) throw new Error(path + " " + r.status);
+  if (!r.ok) throw new Error(`${path} ${r.status}`);
   return r.text();
 }
 
-function setStream(on) {
-  el("view").src = on ? "/stream" : "/capture";
-  el("btnStream").textContent = on ? "Pausar" : "Stream";
+function fmtMs(ms) {
+  const n = Number(ms || 0);
+  if (n < 1000) return `${n} ms`;
+  const s = Math.round(n / 100) / 10;
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rs = Math.round(s % 60);
+  return `${m}m ${rs}s`;
 }
 
-async function refreshHealth() {
-  const h = await jget("/health");
-  el("ip").textContent = h.ip;
-  el("rssi").textContent = h.rssi;
-  el("device").textContent = (h.device_id || "");
+function setStateBadge(elId, text, cls) {
+  const node = $(elId);
+  node.textContent = text;
+  node.className = `status ${cls || ""}`.trim();
 }
 
-async function refreshSensors() {
-  const s = await jget("/api/sensors");
-  const i = await jget("/api/irrigation");
-  el("soilRaw").textContent = s.soil_raw;
-  el("soilPct").textContent = (Number(s.soil_pct).toFixed(2)) + "%";
-  el("luxRaw").textContent = s.lux_raw;
-  el("tempC").textContent = Number(s.temp_c).toFixed(2);
-  el("humPct").textContent = Number(s.hum_pct).toFixed(2);
-  el("dhtOk").textContent = s.dht_ok ? "true" : "false";
-  el("pumpOn").textContent = i.pump_on ? "ON" : "OFF";
-  el("json").textContent = JSON.stringify({ sensors: s, irrigation: i }, null, 2);
+function toPct(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "-";
+  return `${n.toFixed(1)}%`;
 }
 
-async function refreshCameraStatus() {
-  const st = await jget("/status");
-  el("quality").value = st.quality;
-  el("qualityV").textContent = st.quality;
-  el("framesize").value = st.framesize;
-  el("led").value = st.led_intensity;
-  el("ledV").textContent = st.led_intensity;
+function updateStream(on) {
+  state.streaming = on;
+  $("view").src = on ? "/stream" : "/capture";
+  $("btnStream").textContent = on ? "Pausar stream" : "Retomar stream";
+  setStateBadge("streamState", on ? "Stream ativo" : "Stream pausado", on ? "ok" : "warn");
 }
 
-async function control(varName, val) {
-  const q = encodeURIComponent(varName);
-  const v = encodeURIComponent(String(val));
-  await textget("/control?var=" + q + "&val=" + v);
+async function refreshAll() {
+  const paths = [
+    jget("/health"),
+    jget("/api/sensors"),
+    jget("/api/irrigation"),
+    jget("/status"),
+    jget("/metrics"),
+    jget("/api/config"),
+    jget("/api/inference/last")
+  ];
+
+  const [health, sensors, irrigation, camera, metrics, config, lastInfer] = await Promise.all(paths);
+
+  $("device").textContent = health.device_id || "-";
+  $("ip").textContent = health.ip || "-";
+  $("rssi").textContent = `${health.rssi} dBm`;
+  $("uptime").textContent = fmtMs(health.uptime_ms);
+  $("heap").textContent = `${health.heap}`;
+  $("psram").textContent = `${health.psram}`;
+
+  if (health.online) setStateBadge("onlineState", "Online", "ok");
+  else setStateBadge("onlineState", "Offline", "bad");
+
+  const age = Number(sensors.age_ms || 0);
+  if (age <= 4000) setStateBadge("sensorFresh", `Atualizado ha ${fmtMs(age)}`, "ok");
+  else if (age <= 10000) setStateBadge("sensorFresh", `Leitura atrasada (${fmtMs(age)})`, "warn");
+  else setStateBadge("sensorFresh", `Sem leitura recente (${fmtMs(age)})`, "bad");
+
+  $("soilRaw").textContent = String(sensors.soil_raw ?? "-");
+  $("soilPct").textContent = toPct(sensors.soil_pct);
+  $("luxRaw").textContent = String(sensors.lux_raw ?? "-");
+  $("tempC").textContent = Number(sensors.temp_c).toFixed(1) + " C";
+  $("humPct").textContent = toPct(sensors.hum_pct);
+  $("dhtOk").textContent = sensors.dht_ok ? "OK" : "Falha";
+
+  $("autoMode").textContent = irrigation.auto_enabled ? "Ativo" : "Desativado";
+  $("pumpRemaining").textContent = fmtMs(irrigation.remaining_ms || 0);
+  $("cooldownRemaining").textContent = fmtMs(irrigation.cooldown_remaining_ms || 0);
+  $("dryThreshold").textContent = `${irrigation.soil_dry_threshold_pct ?? config.soil_dry_threshold_pct}%`;
+
+  if (irrigation.pump_on) {
+    setStateBadge("pumpState", "Bomba ligada", "ok");
+  } else if ((irrigation.cooldown_remaining_ms || 0) > 0) {
+    setStateBadge("pumpState", "Aguardando cooldown", "warn");
+  } else {
+    setStateBadge("pumpState", "Bomba desligada", "");
+  }
+
+  $("quality").value = camera.quality;
+  $("qualityV").textContent = camera.quality;
+  $("framesize").value = camera.framesize;
+  $("led").value = camera.led_intensity;
+  $("ledV").textContent = camera.led_intensity;
+
+  $("streamClients").textContent = metrics.stream_clients;
+  $("captureCount").textContent = metrics.capture;
+  $("httpCount").textContent = metrics.http;
+  $("mqttPub").textContent = metrics.mqtt_pub;
+  $("mqttFail").textContent = metrics.mqtt_fail;
+  $("logsCount").textContent = metrics.logs;
+
+  $("inferenceJson").textContent = JSON.stringify(lastInfer, null, 2);
+  $("rawJson").textContent = JSON.stringify({ health, sensors, irrigation, camera, metrics, config }, null, 2);
+  $("lastSync").textContent = `sincronizado ${new Date().toLocaleTimeString()}`;
 }
 
-let streaming = true;
+async function cameraControl(name, value) {
+  await textget(`/control?var=${encodeURIComponent(name)}&val=${encodeURIComponent(String(value))}`);
+}
 
-el("btnStream").addEventListener("click", async () => {
-  streaming = !streaming;
-  setStream(streaming);
-});
+async function irrigate(ms) {
+  await jpost("/api/irrigation/start", { ms });
+  pushFeed(`Irrigacao iniciada por ${fmtMs(ms)}`);
+  await refreshAll();
+}
 
-el("btnSnap").addEventListener("click", async () => {
-  const r = await fetch("/capture", { cache: "no-store" });
-  const b = await r.blob();
-  const u = URL.createObjectURL(b);
-  window.open(u, "_blank");
-});
-
-el("btnHealth").addEventListener("click", async () => {
-  await refreshHealth();
-  alert(await (await fetch("/health")).text());
-});
-
-el("btnSensors").addEventListener("click", refreshSensors);
-
-el("btnIrrigate").addEventListener("click", async () => {
-  await jpost("/api/irrigation/start", { ms: 1500 });
-  await refreshSensors();
-});
-
-el("btnStop").addEventListener("click", async () => {
+async function stopIrrigation() {
   await jpost("/api/irrigation/stop", {});
-  await refreshSensors();
+  pushFeed("Irrigacao interrompida manualmente");
+  await refreshAll();
+}
+
+$("btnStream").addEventListener("click", () => {
+  updateStream(!state.streaming);
+  pushFeed(state.streaming ? "Stream retomado" : "Stream pausado");
 });
 
-el("quality").addEventListener("input", () => el("qualityV").textContent = el("quality").value);
-el("led").addEventListener("input", () => el("ledV").textContent = el("led").value);
+$("btnSnap").addEventListener("click", async () => {
+  const r = await fetch("/capture", { cache: "no-store" });
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank");
+  pushFeed("Foto capturada");
+});
 
-el("quality").addEventListener("change", async () => {
-  await control("quality", el("quality").value);
+$("btnRefresh").addEventListener("click", async () => {
+  await refreshAll();
+  pushFeed("Atualizacao manual concluida");
 });
-el("framesize").addEventListener("change", async () => {
-  await control("framesize", el("framesize").value);
+
+$("btnIrrigate").addEventListener("click", async () => {
+  const ms = Math.max(200, Math.min(30000, Number($("irrigationMs").value || 1500)));
+  $("irrigationMs").value = String(ms);
+  await irrigate(ms);
 });
-el("led").addEventListener("change", async () => {
-  await control("led_intensity", el("led").value);
+
+for (const btn of document.querySelectorAll("button.quick")) {
+  btn.addEventListener("click", async () => {
+    const ms = Number(btn.dataset.ms || 1500);
+    $("irrigationMs").value = String(ms);
+    await irrigate(ms);
+  });
+}
+
+$("btnStop").addEventListener("click", stopIrrigation);
+
+$("btnRunInference").addEventListener("click", async () => {
+  await jpost("/api/inference/run", {});
+  pushFeed("Inferencia solicitada");
+});
+
+$("quality").addEventListener("input", () => { $("qualityV").textContent = $("quality").value; });
+$("led").addEventListener("input", () => { $("ledV").textContent = $("led").value; });
+
+$("quality").addEventListener("change", async () => {
+  await cameraControl("quality", $("quality").value);
+  pushFeed(`Qualidade JPEG ajustada para ${$("quality").value}`);
+});
+
+$("framesize").addEventListener("change", async () => {
+  await cameraControl("framesize", $("framesize").value);
+  pushFeed(`Resolucao alterada para ${$("framesize").selectedOptions[0].textContent}`);
+});
+
+$("led").addEventListener("change", async () => {
+  await cameraControl("led_intensity", $("led").value);
+  pushFeed(`LED da camera ajustado para ${$("led").value}`);
 });
 
 async function boot() {
-  setStream(true);
-  await refreshHealth();
-  await refreshCameraStatus();
-  await refreshSensors();
-  setInterval(() => refreshSensors().catch(()=>{}), 2500);
-  setInterval(() => refreshHealth().catch(()=>{}), 7000);
+  updateStream(true);
+  await refreshAll();
+  pushFeed("Painel iniciado");
+
+  setInterval(() => refreshAll().catch((err) => {
+    setStateBadge("onlineState", "Falha na sincronizacao", "bad");
+    pushFeed(`Erro de sincronizacao: ${err.message}`);
+  }), 3500);
 }
 
-boot().catch(e => { el("json").textContent = String(e); });
+boot().catch((err) => {
+  pushFeed(`Falha no boot: ${err.message}`);
+  $("rawJson").textContent = String(err);
+});
 </script>
 </body>
 </html>

@@ -6,6 +6,8 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+  bash \
+  make \
   build-essential \
   libgl1 \
   libglib2.0-0 \
@@ -14,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY ml/ ./ml/
 
 RUN pip install --no-cache-dir -U pip \
-  && pip install --no-cache-dir -e ./ml \
+  && pip install --no-cache-dir -e "./ml[dev]" \
   && pip install --no-cache-dir gunicorn
 
 EXPOSE 5000
