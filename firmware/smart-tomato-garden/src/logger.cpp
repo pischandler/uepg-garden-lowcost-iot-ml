@@ -2,6 +2,7 @@
 #include "networking.h"
 #include "metrics.h"
 #include "storage.h"
+#include <time.h>
 
 static void emitDoc(JsonDocument &doc)
 {
@@ -28,6 +29,9 @@ void Log::rawJson(const char *jsonLine)
 static void fillBase(JsonObject o, const char *name)
 {
   o["ts_ms"] = (uint32_t)millis();
+  time_t now = time(nullptr);
+  if (now > 100000)
+    o["ts_unix"] = (uint32_t)now;
   o["event"] = name;
   o["heap"] = (int)ESP.getFreeHeap();
   o["uptime_ms"] = (uint32_t)millis();
@@ -42,7 +46,7 @@ void Log::event(const char *name, std::initializer_list<Log::KVI> ints,
                 std::initializer_list<Log::KVB> bools,
                 std::initializer_list<Log::KVF> floats)
 {
-  StaticJsonDocument<640> doc;
+  StaticJsonDocument<768> doc;
   auto o = doc.to<JsonObject>();
   fillBase(o, name);
   for (auto &kv : ints)

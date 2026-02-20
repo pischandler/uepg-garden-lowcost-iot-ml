@@ -8,10 +8,12 @@
 #include "sensors.h"
 #include "irrigation.h"
 #include "camera_index.h"
+#include "inference_client.h"
 #include <esp_camera.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <LittleFS.h>
 #include <cstring>
 
 static AsyncWebServer server(HTTP_PORT);
@@ -67,7 +69,7 @@ static bool cameraInit(uint8_t quality, uint8_t framesize)
   esp_err_t err = esp_camera_init(&c);
   if (err != ESP_OK)
   {
-    Log::event("camera_init_fail", {{"err", (int)err}});
+    Log::event("camera_init_fail", {LI("err", (int)err)});
     return false;
   }
 
@@ -128,7 +130,7 @@ private:
 class AsyncJpegStreamResponse : public AsyncAbstractResponse
 {
 public:
-  AsyncJpegStreamResponse() : fb(nullptr), fbIdx(0), headIdx(0), needCrlf(false), lastFrameMs(0)
+  AsyncJpegStreamResponse() : fb(nullptr), fbIdx(0), headIdx(0), needCrlf(false)
   {
     _code = 200;
     _contentType = "multipart/x-mixed-replace;boundary=frame";
@@ -155,13 +157,6 @@ public:
     {
       if (!fb)
       {
-        uint32_t now = millis();
-        uint32_t fps = CAMERA_STREAM_FPS ? CAMERA_STREAM_FPS : 10;
-        uint32_t interval = 1000 / fps;
-        if (lastFrameMs && (now - lastFrameMs) < interval)
-          break;
-        lastFrameMs = now;
-
         fb = esp_camera_fb_get();
         if (!fb)
           break;
@@ -216,7 +211,6 @@ private:
   String head;
   size_t headIdx;
   bool needCrlf;
-  uint32_t lastFrameMs;
 };
 
 static void sendJson(AsyncWebServerRequest *request, const String &payload)
@@ -273,11 +267,11 @@ void CameraServer::begin()
   bool ok = cameraInit(cfg.cam_quality, cfg.cam_framesize);
   if (!ok)
   {
-    Log::event("camera_fail", {{"ok", 0}});
+    Log::event("camera_fail", {LI("ok", 0)});
   }
   else
   {
-    Log::event("camera_ok", {{"ok", 1}});
+    Log::event("camera_ok", {LI("ok", 1)});
   }
 
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
@@ -294,9 +288,10 @@ void CameraServer::begin()
   server.on("/health", HTTP_GET, [](AsyncWebServerRequest *request)
             {
     Metrics::incHttp();
-    StaticJsonDocument<384> doc;
+    StaticJsonDocument<448> doc;
     doc["ip"] = Networking::ip();
     doc["rssi"] = Networking::rssi();
+    doc["online"] = Networking::online();
     doc["device_id"] = Networking::deviceId();
     doc["heap"] = (int)ESP.getFreeHeap();
     doc["psram"] = (int)ESP.getFreePsram();
@@ -309,13 +304,16 @@ void CameraServer::begin()
   server.on("/metrics", HTTP_GET, [](AsyncWebServerRequest *request)
             {
     Metrics::incHttp();
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<384> doc;
     doc["http"] = Metrics::http();
     doc["capture"] = Metrics::capture();
     doc["stream_clients"] = Metrics::streamClients();
     doc["mqtt_pub"] = Metrics::mqttPub();
     doc["mqtt_fail"] = Metrics::mqttFail();
     doc["logs"] = Metrics::logs();
+    doc["infer_attempt"] = Metrics::inferAttempt();
+    doc["infer_ok"] = Metrics::inferOk();
+    doc["infer_fail"] = Metrics::inferFail();
     String out;
     serializeJson(doc, out);
     sendJson(request, out); });
@@ -345,14 +343,13 @@ void CameraServer::begin()
     int val = valS.toInt();
 
     uint32_t h = fnv1a32(var.c_str());
-    auto cfg = ConfigStore::get();
     bool changed = false;
 
     if (h == HKEY("quality")) {
       int q = val;
       if (q < 10) q = 10;
       if (q > 63) q = 63;
-      StaticJsonDocument<64> doc;
+      StaticJsonDocument<96> doc;
       doc["cam_quality"] = (uint8_t)q;
       String js;
       serializeJson(doc, js);
@@ -363,7 +360,7 @@ void CameraServer::begin()
       int fs = val;
       if (fs < 0) fs = 0;
       if (fs > 13) fs = 13;
-      StaticJsonDocument<64> doc;
+      StaticJsonDocument<96> doc;
       doc["cam_framesize"] = (uint8_t)fs;
       String js;
       serializeJson(doc, js);
@@ -374,7 +371,7 @@ void CameraServer::begin()
       int d = val;
       if (d < 0) d = 0;
       if (d > 255) d = 255;
-      StaticJsonDocument<64> doc;
+      StaticJsonDocument<96> doc;
       doc["led_duty"] = (uint8_t)d;
       String js;
       serializeJson(doc, js);
@@ -394,8 +391,10 @@ void CameraServer::begin()
             {
     Metrics::incHttp();
     SensorsSnapshot s = Sensors::latest();
+    uint32_t now = millis();
     StaticJsonDocument<320> doc;
     doc["ts_ms"] = s.ts_ms;
+    doc["age_ms"] = now - s.ts_ms;
     doc["soil_raw"] = s.soil_raw;
     doc["lux_raw"] = s.lux_raw;
     doc["soil_pct"] = s.soil_pct;
@@ -409,12 +408,27 @@ void CameraServer::begin()
   server.on("/api/irrigation", HTTP_GET, [](AsyncWebServerRequest *request)
             {
     Metrics::incHttp();
+    auto cfg = ConfigStore::get();
     IrrigationState s = Irrigation::state();
+    uint32_t now = millis();
+    uint32_t remaining = 0;
+    if (s.pump_on && (int32_t)(s.pump_until_ms - now) > 0)
+      remaining = s.pump_until_ms - now;
+
+    uint32_t cooldownRemaining = 0;
+    uint32_t sinceLastRun = now - s.last_run_ms;
+    if (sinceLastRun < cfg.pump_cooldown_ms)
+      cooldownRemaining = cfg.pump_cooldown_ms - sinceLastRun;
+
     StaticJsonDocument<256> doc;
     doc["pump_on"] = s.pump_on;
     doc["pump_until_ms"] = s.pump_until_ms;
+    doc["remaining_ms"] = remaining;
     doc["last_run_ms"] = s.last_run_ms;
     doc["auto_enabled"] = s.auto_enabled;
+    doc["cooldown_remaining_ms"] = cooldownRemaining;
+    doc["soil_dry_threshold_pct"] = cfg.soil_dry_threshold_pct;
+    doc["pump_on_ms"] = cfg.pump_on_ms;
     String out;
     serializeJson(doc, out);
     sendJson(request, out); });
@@ -461,6 +475,59 @@ void CameraServer::begin()
                 maybeLedForStream();
                 String out = ConfigStore::toJson();
                 sendJson(req, out); }); });
+
+  server.on("/api/inference/config", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+    Metrics::incHttp();
+    auto cfg = ConfigStore::get();
+    StaticJsonDocument<512> doc;
+    doc["infer_enabled"] = cfg.infer_enabled;
+    doc["infer_skip_when_streaming"] = cfg.infer_skip_when_streaming;
+    doc["infer_period_ms"] = cfg.infer_period_ms;
+    doc["infer_host"] = cfg.infer_host;
+    doc["infer_port"] = cfg.infer_port;
+    doc["infer_path"] = cfg.infer_path;
+    String out;
+    serializeJson(doc, out);
+    sendJson(request, out); });
+
+  server.on("/api/inference/config", HTTP_POST, [](AsyncWebServerRequest *request)
+            { Metrics::incHttp(); }, nullptr, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+            { handleJsonBody(request, data, len, index, total, [](AsyncWebServerRequest *req, const String &body)
+                             {
+                ConfigStore::setPartialJson(body.c_str());
+                String out = ConfigStore::toJson();
+                sendJson(req, out);
+                Log::event("infer_cfg_set", {LI("ok", 1)}); }); });
+
+  server.on("/api/inference/run", HTTP_POST, [](AsyncWebServerRequest *request)
+            {
+    Metrics::incHttp();
+    InferenceClient::requestRun();
+    StaticJsonDocument<128> doc;
+    doc["ok"] = true;
+    doc["queued"] = true;
+    String out;
+    serializeJson(doc, out);
+    sendJson(request, out); });
+
+  server.on("/api/inference/last", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+    Metrics::incHttp();
+    sendJson(request, InferenceClient::lastJson()); });
+
+  server.on("/api/inference/log", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+    Metrics::incHttp();
+    if (!LittleFS.begin(true)) {
+      request->send(500, "text/plain", "fs_fail");
+      return;
+    }
+    if (!LittleFS.exists("/inference.csv")) {
+      request->send(404, "text/plain", "no_log");
+      return;
+    }
+    request->send(LittleFS, "/inference.csv", "text/csv"); });
 
   server.on("/capture", HTTP_GET, [](AsyncWebServerRequest *request)
             {

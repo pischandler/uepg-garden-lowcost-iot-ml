@@ -7,6 +7,7 @@
 #include "sensors.h"
 #include "irrigation.h"
 #include "camera_server.h"
+#include "inference_client.h"
 #include <esp_task_wdt.h>
 
 static uint32_t bootCount = 0;
@@ -35,20 +36,22 @@ void setup()
 
   wdtInit();
 
-  Log::event("boot", {{"reason", (int)esp_reset_reason()},
-                      {"boot_count", (int)bootCount},
-                      {"chip_rev", (int)ESP.getChipRevision()},
-                      {"heap", (int)ESP.getFreeHeap()},
-                      {"psram", (int)ESP.getFreePsram()}});
+  Log::event("boot",
+             {LI("reason", (int)esp_reset_reason()),
+              LI("boot_count", (int)bootCount),
+              LI("chip_rev", (int)ESP.getChipRevision()),
+              LI("heap", (int)ESP.getFreeHeap()),
+              LI("psram", (int)ESP.getFreePsram())});
 
   Networking::begin();
   Sensors::begin();
   Irrigation::begin();
   CameraServer::begin();
+  InferenceClient::begin();
 
-  Log::event("ready", {{"ip", Networking::ip().c_str()},
-                       {"mac", Networking::mac().c_str()},
-                       {"device_id", Networking::deviceId().c_str()}});
+  Log::event("ready", {LS("ip", Networking::ip().c_str()),
+                       LS("mac", Networking::mac().c_str()),
+                       LS("device_id", Networking::deviceId().c_str())});
 }
 
 void loop()
@@ -57,6 +60,7 @@ void loop()
   Networking::loop();
   Sensors::loop();
   Irrigation::loop();
+  InferenceClient::loop();
   Storage::loop();
   delay(5);
 }

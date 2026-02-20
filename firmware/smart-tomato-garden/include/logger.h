@@ -49,3 +49,14 @@ public:
 
   static void event(const char *name, std::initializer_list<Log::KVI> ints, std::initializer_list<Log::KV> strs);
 };
+
+#define LI(k, v) \
+  Log::KVI { (k), (int)(v) }
+#define LU(k, v) \
+  Log::KVU { (k), (uint32_t)(v) }
+#define LB(k, v) \
+  Log::KVB { (k), (bool)(v) }
+#define LF(k, v) \
+  Log::KVF { (k), (float)(v) }
+#define LS(k, v) \
+  Log::KV { (k), (v) }
