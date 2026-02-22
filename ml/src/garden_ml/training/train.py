@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import random
@@ -30,6 +31,7 @@ from tqdm import tqdm
 from xgboost import XGBClassifier
 
 from garden_ml.config.constants import ENCODER_FILE, FEATURE_SCHEMA_FILE, MODEL_FILE, TRAIN_META_FILE
+from garden_ml.config.logging import setup_logging
 from garden_ml.config.settings import Settings
 from garden_ml.data.manifest import class_distribution, samples_from_manifest, scan_folder_dataset, write_json
 from garden_ml.data.splits import expand_groups, stratified_group_split
@@ -169,10 +171,28 @@ def maybe_mlflow_log(params: dict[str, Any], metrics: dict[str, Any], artifacts:
                 mlflow.log_artifact(str(p), artifact_path=name)
 
 
+def _infer_kind_from_path(p: str) -> str:
+    stem = Path(p).stem.lower()
+    if "__aug" in stem:
+        return "aug"
+    if "__orig" in stem:
+        return "orig"
+    return "orig"
+
+
+def _write_manifest_csv(path: Path, rows: list[tuple[str, str, str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["path", "class", "group_id", "kind"])
+        for r in rows:
+            w.writerow(list(r))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset_dir", type=str, default="dataset_aug")
-    ap.add_argument("--output_dir", type=str, default="artifacts/model_registry/v0001")
+    ap.add_argument("--output_dir", type=str, default="artifacts/model_registry/v0002")
     ap.add_argument("--img_size", type=int, default=128)
     ap.add_argument("--test_size", type=float, default=0.30)
     ap.add_argument("--seed", type=int, default=42)
@@ -181,25 +201,41 @@ def main() -> int:
     ap.add_argument("--photometric_normalize", action="store_true")
     args = ap.parse_args()
 
-    st = Settings(img_size=args.img_size, seed=args.seed)
+    out_dir = Path(args.output_dir)
+    st = Settings(img_size=int(args.img_size), seed=int(args.seed), artifacts_dir=out_dir)
+    setup_logging(st.log_level)
+
     st.ensure_dirs()
-    set_seed(args.seed)
+    set_seed(int(args.seed))
     maybe_mlflow_init(st)
 
     dataset_dir = Path(args.dataset_dir)
     if not dataset_dir.is_dir():
         raise SystemExit(f"dataset_dir not found: {dataset_dir}")
 
-    out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(
+        "train_start dataset_dir={} output_dir={} img_size={} test_size={} seed={} cv_folds={} manifest={} photometric_normalize={} mlflow_enabled={}",
+        str(dataset_dir),
+        str(out_dir),
+        int(args.img_size),
+        float(args.test_size),
+        int(args.seed),
+        int(args.cv_folds),
+        str(args.manifest),
+        bool(args.photometric_normalize),
+        bool(st.mlflow_enabled),
+    )
 
     try:
         samples = samples_from_manifest(dataset_dir, args.manifest, include_kinds={"orig", "aug"})
-        logger.info("loaded from manifest: n={}", len(samples))
-    except Exception:
+        logger.info("loaded_from_manifest n={}", len(samples))
+    except Exception as e:
+        logger.warning("manifest_load_failed {}", str(e))
         raw = scan_folder_dataset(dataset_dir)
         samples = [(str(p), c, g, "orig") for p, c, g in raw]
-        logger.info("scanned folders: n={}", len(samples))
+        logger.info("scanned_folders n={}", len(samples))
 
     if not samples:
         raise SystemExit("no samples found")
@@ -227,7 +263,27 @@ def main() -> int:
     if not train_items or not test_items:
         raise SystemExit("invalid split (empty train or test)")
 
-    logger.info("split train={} test={} (test originals only)", len(train_items), len(test_items))
+    split_payload = {
+        "seed": int(args.seed),
+        "test_size": float(args.test_size),
+        "train_groups": sorted(list(split.train_groups)),
+        "test_groups": sorted(list(split.test_groups)),
+        "n_train_samples": int(len(train_items)),
+        "n_test_samples": int(len(test_items)),
+    }
+    (out_dir / "split_groups.json").write_text(json.dumps(split_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    train_manifest_rows = []
+    for (p, c), gid in zip(train_items, train_g):
+        train_manifest_rows.append((str(p), str(c), str(gid), _infer_kind_from_path(str(p))))
+    test_manifest_rows = []
+    for (p, c), gid in zip(test_items, test_g):
+        test_manifest_rows.append((str(p), str(c), str(gid), "orig"))
+
+    _write_manifest_csv(out_dir / "train_manifest.csv", train_manifest_rows)
+    _write_manifest_csv(out_dir / "test_manifest.csv", test_manifest_rows)
+
+    logger.info("split_done train={} test={} groups_train={} groups_test={}", len(train_items), len(test_items), len(split.train_groups), len(split.test_groups))
 
     opts = ExtractOptions(img_size=int(args.img_size), photometric_normalize=bool(args.photometric_normalize))
 
@@ -236,11 +292,10 @@ def main() -> int:
     g_train_list: list[str] = []
     X_test_list: list[np.ndarray] = []
     y_test_list: list[str] = []
-
     errors: list[dict[str, str]] = []
 
     t0 = time.time()
-    for (p, c), gid in tqdm(list(zip(train_items, train_g)), desc="features_train", unit="img"):
+    for (p, c), gid in tqdm(list(zip(train_items, train_g)), desc="features_train", unit="img", mininterval=1.0):
         try:
             X_train_list.append(extract_102_from_path(Path(p), opts))
             y_train_list.append(c)
@@ -248,7 +303,7 @@ def main() -> int:
         except Exception as e:
             errors.append({"path": str(p), "error": str(e)})
 
-    for p, c in tqdm(test_items, desc="features_test", unit="img"):
+    for p, c in tqdm(test_items, desc="features_test", unit="img", mininterval=1.0):
         try:
             X_test_list.append(extract_102_from_path(Path(p), opts))
             y_test_list.append(c)
@@ -264,13 +319,7 @@ def main() -> int:
     y_test = np.array(y_test_list, dtype=object)
     g_train_arr = np.array(g_train_list, dtype=object)
 
-    logger.info(
-        "features extracted train={} test={} failed={} elapsed_s={:.3f}",
-        X_train.shape[0],
-        X_test.shape[0],
-        len(errors),
-        time.time() - t0,
-    )
+    logger.info("features_done train={} test={} failed={} elapsed_s={:.3f}", X_train.shape[0], X_test.shape[0], len(errors), time.time() - t0)
 
     le = LabelEncoder()
     le.fit(np.concatenate([y_train, y_test], axis=0))
@@ -294,7 +343,7 @@ def main() -> int:
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     for spec in specs:
-        logger.info("grid_search_start {}", spec.name)
+        logger.info("grid_search_start model={}", spec.name)
         grid = GridSearchCV(
             estimator=spec.estimator,
             param_grid=spec.param_grid,
@@ -302,7 +351,8 @@ def main() -> int:
             cv=cv,
             n_jobs=-1,
             refit=True,
-            verbose=0,
+            verbose=1,
+            error_score="raise",
         )
         t1 = time.time()
         grid.fit(X_train, y_train_enc, groups=g_train_arr)
@@ -341,7 +391,7 @@ def main() -> int:
             best_est = grid.best_estimator_
 
         logger.info(
-            "grid_search_done {} test_macro_f1={:.4f} test_acc={:.4f} cv_best={:.4f} time_s={:.2f}",
+            "grid_search_done model={} test_macro_f1={:.4f} test_acc={:.4f} cv_best={:.4f} time_s={:.2f}",
             spec.name,
             metrics["macro_f1"],
             metrics["accuracy"],
@@ -384,6 +434,9 @@ def main() -> int:
         "meta": out_dir / TRAIN_META_FILE,
         "schema": out_dir / FEATURE_SCHEMA_FILE,
         "comparison": out_dir / "model_comparison.csv",
+        "split_groups": out_dir / "split_groups.json",
+        "train_manifest": out_dir / "train_manifest.csv",
+        "test_manifest": out_dir / "test_manifest.csv",
     }
     params = {
         "seed": int(args.seed),
@@ -396,8 +449,7 @@ def main() -> int:
     tags = {"pipeline": "features_102", "selection": "best_macro_f1", "final_model": best_name}
     maybe_mlflow_log(params=params, metrics={"final_macro_f1": float(best_score)}, artifacts=artifacts, tags=tags, enabled=st.mlflow_enabled)
 
-    logger.info("saved artifacts in {}", out_dir)
-    logger.info("final_model={} macro_f1={:.4f}", best_name, float(best_score))
+    logger.info("train_done artifacts_dir={} final_model={} macro_f1={:.4f} errors_count={}", str(out_dir), best_name, float(best_score), len(errors))
     return 0
 
 

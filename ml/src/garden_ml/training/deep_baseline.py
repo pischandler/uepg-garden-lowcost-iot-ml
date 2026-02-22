@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from loguru import logger
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, matthews_corrcoef, precision_recall_fscore_support
 from tqdm import tqdm
 
+from garden_ml.config.logging import setup_logging
 from garden_ml.data.manifest import samples_from_manifest, scan_folder_dataset
 from garden_ml.data.splits import stratified_group_split
 
@@ -71,12 +73,14 @@ def metrics(y_true: np.ndarray, y_pred: np.ndarray, n_classes: int) -> dict:
 
 
 def main() -> int:
+    setup_logging()
+
     if torch is None:
         raise SystemExit("install extras: pip install -e '.[dl]'")
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset_dir", type=str, default="dataset_aug")
-    ap.add_argument("--output_dir", type=str, default="artifacts/model_registry/v0001_dl")
+    ap.add_argument("--output_dir", type=str, default="artifacts/model_registry/v0002_dl")
     ap.add_argument("--img_size", type=int, default=224)
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch", type=int, default=32)
@@ -90,6 +94,9 @@ def main() -> int:
     dataset_dir = Path(args.dataset_dir)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("deep_start dataset_dir={} output_dir={} img_size={} epochs={} batch={} lr={} seed={} test_size={}",
+                str(dataset_dir), str(out_dir), int(args.img_size), int(args.epochs), int(args.batch), float(args.lr), int(args.seed), float(args.test_size))
 
     try:
         rows = samples_from_manifest(dataset_dir, args.manifest, include_kinds={"orig", "aug"}, require_status_ok=True)
@@ -148,7 +155,7 @@ def main() -> int:
 
     for ep in range(1, int(args.epochs) + 1):
         model.train()
-        for x, y in tqdm(dl_train, desc=f"train_ep{ep}", unit="batch"):
+        for x, y in tqdm(dl_train, desc=f"train_ep{ep}", unit="batch", mininterval=1.0):
             x = x.to(device)
             y = y.to(device)
             opt.zero_grad(set_to_none=True)
@@ -161,7 +168,7 @@ def main() -> int:
         yt = []
         yp = []
         with torch.no_grad():
-            for x, y in tqdm(dl_test, desc=f"eval_ep{ep}", unit="batch"):
+            for x, y in tqdm(dl_test, desc=f"eval_ep{ep}", unit="batch", mininterval=1.0):
                 x = x.to(device)
                 out = model(x)
                 pred = torch.argmax(out, dim=1).cpu().numpy()
@@ -170,7 +177,7 @@ def main() -> int:
         y_true = np.concatenate(yt, axis=0)
         y_pred = np.concatenate(yp, axis=0)
         m = metrics(y_true, y_pred, n_classes=n_classes)
-        logger.info("ep={} acc={:.4f} macro_f1={:.4f}", ep, m["accuracy"], m["macro_f1"])
+        logger.info("deep_ep={} acc={:.4f} macro_f1={:.4f}", ep, m["accuracy"], m["macro_f1"])
 
         if float(m["macro_f1"]) > best_macro:
             best_macro = float(m["macro_f1"])
@@ -179,7 +186,7 @@ def main() -> int:
     meta = {"model": "mobilenet_v3_small", "best_macro_f1": best_macro, "classes": classes, "img_size": int(args.img_size)}
     (out_dir / "training_metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    logger.info("saved {}", best_path)
+    logger.info("deep_done best_path={} best_macro_f1={:.4f}", str(best_path), float(best_macro))
     return 0
 
 

@@ -1,58 +1,37 @@
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+# Ignore tudo por padrão
+**
 
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.egg-info/
-.eggs/
+# Permite apenas o necessário para build da imagem
+!ml/**
+!docker-compose.yml
 
-.venv/
-venv/
-env/
-
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-ml/reports/
-reports/
-mlruns/
-wandb/
-runs/
-outputs/
-logs/
-salvas/
-*.log
-
-ml/artifacts/model_registry/**/*
-!ml/artifacts/model_registry/.gitkeep
-
-dataset/
-dataset_aug/
-data/
-raw/
-*.zip
-*.tar
-*.tar.gz
-
+# Segurança/ambiente
 .env
 .env.*
-secrets.h
 **/secrets.h
 **/secrets.*.h
 
-build/
-dist/
+# Venv / caches
+.venv/
+venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ruff_cache/
 
-firmware/**/.pio/
-firmware/**/.pioenvs/
-firmware/**/.piolibdeps/
-
-*.bin
-*.img
+# Repositório / CI / firmware / datasets / outputs
+.git/
+.github/
+firmware/
+tools/
+docs/
+dataset/
+dataset_aug/
+reports/
+ml/reports/
+mlruns/
+wandb/
+salvas/
+outputs/
+runs/
+logs/
