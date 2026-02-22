@@ -18,7 +18,7 @@ class DummyModel:
 
 
 def test_predict_topk_shapes():
-    arts = LoadedArtifacts(model=DummyModel(), encoder=DummyEnc(), classes=["A", "B"])
+    arts = LoadedArtifacts(model=DummyModel(), encoder=DummyEnc(), classes=["A", "B"], photometric_normalize_default=False)
     rgb = np.zeros((128, 128, 3), dtype=np.uint8)
     cls, score, topk, timings = predict_topk(arts, rgb, img_size=128, k=2, photometric_normalize=False)
     assert cls in {"A", "B"}

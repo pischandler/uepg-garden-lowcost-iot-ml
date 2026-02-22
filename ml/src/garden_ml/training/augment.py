@@ -15,9 +15,12 @@ from PIL import Image
 from tqdm import tqdm
 
 from garden_ml.config.constants import DEFAULT_AUG_CONFIG, DEFAULT_AUG_MANIFEST
+from garden_ml.config.logging import setup_logging
 from garden_ml.data.io import is_image_file
 from garden_ml.image.resize import letterbox_rgb
 from garden_ml.image.segmentation import segment_leaf_hsv
+
+from loguru import logger
 
 
 def set_seed(seed: int) -> None:
@@ -97,6 +100,8 @@ def build_aug_pipeline() -> tuple[A.Compose, dict]:
 
 
 def main() -> int:
+    setup_logging()
+
     p = argparse.ArgumentParser()
     p.add_argument("--input_dir", type=str, default="dataset")
     p.add_argument("--output_dir", type=str, default="dataset_aug")
@@ -114,7 +119,7 @@ def main() -> int:
     if not in_dir.is_dir():
         raise SystemExit(f"input_dir not found: {in_dir}")
 
-    set_seed(args.seed)
+    set_seed(int(args.seed))
     aug, aug_desc = build_aug_pipeline()
 
     classes = sorted([x.name for x in in_dir.iterdir() if x.is_dir()])
@@ -134,21 +139,33 @@ def main() -> int:
     config_path = out_dir / DEFAULT_AUG_CONFIG
 
     config_payload = {
-        "seed": args.seed,
-        "img_size": args.img_size,
-        "aug_per_image": args.aug_per_image,
-        "jpeg_quality": args.jpeg_quality,
+        "seed": int(args.seed),
+        "img_size": int(args.img_size),
+        "aug_per_image": int(args.aug_per_image),
+        "jpeg_quality": int(args.jpeg_quality),
         "no_originals": bool(args.no_originals),
         "segment_before_aug": bool(args.segment_before_aug),
         "pipeline": aug_desc,
     }
     config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    logger.info(
+        "augment_start input={} output={} classes={} images={} img_size={} aug_per_image={} seed={} segment_before_aug={}",
+        str(in_dir),
+        str(out_dir),
+        len(classes),
+        len(items),
+        int(args.img_size),
+        int(args.aug_per_image),
+        int(args.seed),
+        bool(args.segment_before_aug),
+    )
+
     rows: list[list[str]] = []
     include_originals = not args.no_originals
-    size = (args.img_size, args.img_size)
+    size = (int(args.img_size), int(args.img_size))
 
-    bar = tqdm(total=len(items), desc="augmenting", unit="img")
+    bar = tqdm(total=len(items), desc="augmenting", unit="img", mininterval=1.0)
     for c, img_path in items:
         bar.update(1)
         group_id = f"{c}/{img_path.stem}"
@@ -164,11 +181,11 @@ def main() -> int:
                 rgb, _mask = segment_leaf_hsv(rgb, size=size)
 
             src_rel = str(img_path.resolve().relative_to(in_dir.resolve()))
-            seed_img = (args.seed + stable_int_seed(f"{src_rel}|{group_id}")) % (2**31 - 1)
+            seed_img = (int(args.seed) + stable_int_seed(f"{src_rel}|{group_id}")) % (2**31 - 1)
 
             if include_originals:
                 out_orig = class_out / f"{img_path.stem}__orig.jpg"
-                save_jpeg(rgb, out_orig, quality=args.jpeg_quality)
+                save_jpeg(rgb, out_orig, quality=int(args.jpeg_quality))
                 rows.append([c, group_id, src_rel, str(out_orig.relative_to(out_dir)), "orig", "", str(seed_img), "ok", ""])
 
             for k in range(1, int(args.aug_per_image) + 1):
@@ -177,11 +194,11 @@ def main() -> int:
                 auged = aug(image=rgb)["image"]
                 auged = np.clip(auged, 0, 255).astype(np.uint8)
                 out_aug = class_out / f"{img_path.stem}__aug{k:03d}.jpg"
-                save_jpeg(auged, out_aug, quality=args.jpeg_quality)
+                save_jpeg(auged, out_aug, quality=int(args.jpeg_quality))
                 rows.append([c, group_id, src_rel, str(out_aug.relative_to(out_dir)), "aug", str(k), str(seed_img), "ok", ""])
 
         except Exception as e:
-            rows.append([c, group_id, str(img_path), "", "error", "", str(args.seed), "error", str(e).replace("\n", " ").strip()])
+            rows.append([c, group_id, str(img_path), "", "error", "", str(int(args.seed)), "error", str(e).replace("\n", " ").strip()])
 
     bar.close()
 
@@ -190,9 +207,7 @@ def main() -> int:
         w.writerow(["class", "group_id", "source_path", "output_path", "kind", "aug_index", "seed", "status", "error"])
         w.writerows(rows)
 
-    print(f"done: {out_dir}")
-    print(f"manifest: {manifest_path}")
-    print(f"config: {config_path}")
+    logger.info("augment_done output={} manifest={} config={}", str(out_dir), str(manifest_path), str(config_path))
     return 0
 
 

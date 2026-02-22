@@ -10,6 +10,7 @@ from flask import Flask, jsonify, request
 from loguru import logger
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
+from garden_ml.config.logging import setup_logging
 from garden_ml.config.settings import Settings
 from garden_ml.data.io import fetch_bytes, secure_ext
 from garden_ml.inference.predictor import load_artifacts, predict_from_image_bytes
@@ -21,7 +22,19 @@ PRED_LAT = Histogram("gml_predict_latency_ms", "Prediction latency (ms)")
 DECODE_LAT = Histogram("gml_decode_latency_ms", "Decode latency (ms)")
 
 
+def _parse_normalize_override_query() -> bool | None:
+    if "normalize" not in request.args:
+        return None
+    v = str(request.args.get("normalize", "")).strip().lower()
+    if v in {"1", "true", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
 def _build_app(st: Settings) -> Flask:
+    setup_logging(st.log_level)
     st.ensure_dirs()
     arts = load_artifacts(st.artifacts_dir)
 
@@ -31,13 +44,18 @@ def _build_app(st: Settings) -> Flask:
     @app.get("/health")
     def health():
         REQ_COUNT.labels(endpoint="/health", status="200").inc()
-        return jsonify(ok=True, classes=arts.classes, artifacts_dir=str(st.artifacts_dir))
+        return jsonify(
+            ok=True,
+            classes=arts.classes,
+            artifacts_dir=str(st.artifacts_dir),
+            photometric_normalize_default=bool(arts.photometric_normalize_default),
+        )
 
     @app.get("/metrics")
     def metrics():
         return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 
-    def _infer_bytes(data: bytes, meta: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    def _infer_bytes(data: bytes, meta: dict[str, Any], normalize_override: bool | None) -> tuple[dict[str, Any], int]:
         t0 = time.perf_counter()
         try:
             cls, score, topk, timings = predict_from_image_bytes(
@@ -45,7 +63,7 @@ def _build_app(st: Settings) -> Flask:
                 data,
                 img_size=st.img_size,
                 k=st.topk,
-                photometric_normalize=bool(meta.get("photometric_normalize", False)),
+                photometric_normalize=normalize_override,
             )
             t1 = time.perf_counter()
             out = {
@@ -54,6 +72,7 @@ def _build_app(st: Settings) -> Flask:
                 "topk": topk,
                 "timings_ms": timings,
                 "meta": meta,
+                "photometric_normalize_used": bool(arts.photometric_normalize_default if normalize_override is None else normalize_override),
             }
             ep = str(meta.get("endpoint", "infer"))
             REQ_COUNT.labels(endpoint=ep, status="200").inc()
@@ -70,6 +89,7 @@ def _build_app(st: Settings) -> Flask:
             ep = str(meta.get("endpoint", "infer"))
             REQ_COUNT.labels(endpoint=ep, status="500").inc()
             REQ_LAT.labels(endpoint=ep).observe((t1 - t0) * 1000.0)
+            logger.exception("infer_failed endpoint={}", ep)
             return {"erro": "Falha durante a análise.", "mensagem": str(e)}, 500
 
     @app.post("/analisar")
@@ -88,9 +108,9 @@ def _build_app(st: Settings) -> Flask:
         meta = {
             "endpoint": "/analisar",
             "device_id": request.headers.get("X-Device-Id", ""),
-            "photometric_normalize": bool(request.args.get("normalize", "0") == "1"),
         }
-        out, code = _infer_bytes(data, meta)
+        normalize_override = _parse_normalize_override_query()
+        out, code = _infer_bytes(data, meta, normalize_override=normalize_override)
         return jsonify(out), code
 
     @app.post("/analisar_url")
@@ -102,7 +122,11 @@ def _build_app(st: Settings) -> Flask:
             return jsonify({"erro": "Campo obrigatório: url"}), 400
 
         device_id_req = str(payload.get("device_id") or "").strip()
-        normalize = bool(payload.get("normalize", False))
+        normalize_override = payload.get("normalize", None)
+        if isinstance(normalize_override, bool):
+            norm = normalize_override
+        else:
+            norm = None
 
         try:
             data, headers = fetch_bytes(url, timeout_s=8.0)
@@ -116,14 +140,13 @@ def _build_app(st: Settings) -> Flask:
             "endpoint": "/analisar_url",
             "device_id": device_id,
             "source_url": url,
-            "photometric_normalize": normalize,
             "lux_raw": headers.get("X-Lux-Raw", ""),
             "soil_raw": headers.get("X-Soil-Raw", ""),
             "soil_pct": headers.get("X-Soil-Pct", ""),
             "temp_c": headers.get("X-Temp-C", ""),
             "hum_pct": headers.get("X-Hum-Pct", ""),
         }
-        out, code = _infer_bytes(data, meta)
+        out, code = _infer_bytes(data, meta, normalize_override=norm)
         return jsonify(out), code
 
     return app
@@ -139,7 +162,7 @@ app = create_app()
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--artifacts_dir", type=str, default="artifacts/model_registry/v0001")
+    ap.add_argument("--artifacts_dir", type=str, default="artifacts/model_registry/v0002")
     ap.add_argument("--host", type=str, default="0.0.0.0")
     ap.add_argument("--port", type=int, default=5000)
     args = ap.parse_args()

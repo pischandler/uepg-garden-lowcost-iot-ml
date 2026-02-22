@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Any
 import joblib
 import numpy as np
 
-from garden_ml.config.constants import ENCODER_FILE, MODEL_FILE
+from garden_ml.config.constants import ENCODER_FILE, MODEL_FILE, TRAIN_META_FILE
 from garden_ml.data.io import bgr_to_rgb, decode_bgr_from_bytes
 from garden_ml.features.extract import ExtractOptions, extract_102_from_rgb
 
@@ -18,13 +19,24 @@ class LoadedArtifacts:
     model: Any
     encoder: Any
     classes: list[str]
+    photometric_normalize_default: bool
 
 
 def load_artifacts(artifacts_dir: Path) -> LoadedArtifacts:
     model = joblib.load(artifacts_dir / MODEL_FILE)
     enc = joblib.load(artifacts_dir / ENCODER_FILE)
     classes = list(enc.classes_)
-    return LoadedArtifacts(model=model, encoder=enc, classes=classes)
+
+    normalize_default = False
+    meta_path = artifacts_dir / TRAIN_META_FILE
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            normalize_default = bool(meta.get("photometric_normalize", False))
+        except Exception:
+            normalize_default = False
+
+    return LoadedArtifacts(model=model, encoder=enc, classes=classes, photometric_normalize_default=normalize_default)
 
 
 def predict_topk(
@@ -32,10 +44,12 @@ def predict_topk(
     rgb: np.ndarray,
     img_size: int,
     k: int,
-    photometric_normalize: bool,
+    photometric_normalize: bool | None,
 ) -> tuple[str, float, list[dict[str, float]], dict[str, float]]:
+    use_norm = arts.photometric_normalize_default if photometric_normalize is None else bool(photometric_normalize)
+
     t0 = time.perf_counter()
-    feat = extract_102_from_rgb(rgb, ExtractOptions(img_size=img_size, photometric_normalize=photometric_normalize))
+    feat = extract_102_from_rgb(rgb, ExtractOptions(img_size=img_size, photometric_normalize=use_norm))
     t1 = time.perf_counter()
 
     X = feat.reshape(1, -1).astype(np.float64)
@@ -66,7 +80,7 @@ def predict_from_image_bytes(
     data: bytes,
     img_size: int,
     k: int,
-    photometric_normalize: bool,
+    photometric_normalize: bool | None,
 ) -> tuple[str, float, list[dict[str, float]], dict[str, float]]:
     t0 = time.perf_counter()
     bgr = decode_bgr_from_bytes(data)

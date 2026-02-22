@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import time
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from loguru import logger
 from sklearn.metrics import confusion_matrix
 
 from garden_ml.config.constants import ENCODER_FILE, MODEL_FILE
+from garden_ml.config.logging import setup_logging
 from garden_ml.data.manifest import samples_from_manifest, scan_folder_dataset, write_json
 from garden_ml.features.extract import ExtractOptions, extract_102_from_path, extract_102_from_rgb
 from garden_ml.image.photometric import brightness_contrast_rgb, gamma_rgb
@@ -24,13 +26,37 @@ def load_artifacts(artifacts_dir: Path) -> tuple[Any, Any]:
     return model, le
 
 
-def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest: str, normalize: bool) -> dict[str, Any]:
+def _load_test_manifest_csv(p: Path) -> list[tuple[Path, str]]:
+    out: list[tuple[Path, str]] = []
+    with p.open("r", newline="", encoding="utf-8") as f:
+        r = csv.DictReader(f)
+        if not r.fieldnames or "path" not in r.fieldnames or "class" not in r.fieldnames:
+            raise ValueError("invalid test_manifest.csv")
+        for row in r:
+            path = (row.get("path") or "").strip()
+            cls = (row.get("class") or "").strip()
+            if path and cls:
+                out.append((Path(path), cls))
+    if not out:
+        raise ValueError("empty test_manifest.csv")
+    return out
+
+
+def _resolve_eval_items(dataset_dir: Path, artifacts_dir: Path, manifest: str) -> list[tuple[Path, str]]:
+    test_manifest = artifacts_dir / "test_manifest.csv"
+    if test_manifest.is_file():
+        return _load_test_manifest_csv(test_manifest)
+
     try:
         rows = samples_from_manifest(dataset_dir, manifest, include_kinds={"orig"}, require_status_ok=True)
-        items = [(Path(p), cls) for p, cls, _gid, _kind in rows]
+        return [(Path(p), cls) for p, cls, _gid, _kind in rows]
     except Exception:
         raw = scan_folder_dataset(dataset_dir)
-        items = [(p, c) for p, c, _g in raw]
+        return [(p, c) for p, c, _g in raw]
+
+
+def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest: str, normalize: bool) -> dict[str, Any]:
+    items = _resolve_eval_items(dataset_dir, artifacts_dir, manifest)
 
     model, le = load_artifacts(artifacts_dir)
     opts = ExtractOptions(img_size=img_size, photometric_normalize=normalize)
@@ -72,13 +98,7 @@ def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest
 def illumination_sensitivity(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest: str) -> dict[str, Any]:
     from PIL import Image
 
-    try:
-        rows = samples_from_manifest(dataset_dir, manifest, include_kinds={"orig"}, require_status_ok=True)
-        items = [(Path(p), cls) for p, cls, _gid, _kind in rows]
-    except Exception:
-        raw = scan_folder_dataset(dataset_dir)
-        items = [(p, c) for p, c, _g in raw]
-
+    items = _resolve_eval_items(dataset_dir, artifacts_dir, manifest)
     model, le = load_artifacts(artifacts_dir)
 
     scenarios = [
@@ -121,9 +141,11 @@ def illumination_sensitivity(dataset_dir: Path, artifacts_dir: Path, img_size: i
 
 
 def main() -> int:
+    setup_logging()
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset_dir", type=str, default="dataset_aug")
-    ap.add_argument("--artifacts_dir", type=str, default="artifacts/model_registry/v0001")
+    ap.add_argument("--artifacts_dir", type=str, default="artifacts/model_registry/v0002")
     ap.add_argument("--img_size", type=int, default=128)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--manifest", type=str, default="augmentation_manifest.csv")
@@ -133,6 +155,8 @@ def main() -> int:
     artifacts_dir = Path(args.artifacts_dir)
     out_dir = artifacts_dir / "evaluation"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("eval_start dataset_dir={} artifacts_dir={} img_size={} manifest={}", str(dataset_dir), str(artifacts_dir), int(args.img_size), str(args.manifest))
 
     eval_base = eval_dataset(dataset_dir, artifacts_dir, img_size=int(args.img_size), manifest=args.manifest, normalize=False)
     eval_norm = eval_dataset(dataset_dir, artifacts_dir, img_size=int(args.img_size), manifest=args.manifest, normalize=True)
@@ -145,7 +169,7 @@ def main() -> int:
     pd.DataFrame(eval_base["metrics"]["per_class"]).to_csv(out_dir / "per_class_base.csv", index=False)
     pd.DataFrame(eval_norm["metrics"]["per_class"]).to_csv(out_dir / "per_class_normalized.csv", index=False)
 
-    logger.info("saved evaluation at {}", out_dir)
+    logger.info("eval_done output_dir={}", str(out_dir))
     return 0
 
 
