@@ -1,8 +1,8 @@
 from garden_ml.features.schema import SCHEMA
 
 
-def test_schema_total_is_102():
-    assert SCHEMA.total == 102
+def test_schema_total_is_188():
+    assert SCHEMA.total == 188
 
 
 def test_schema_parts_sum_to_total():

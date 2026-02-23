@@ -21,14 +21,18 @@ def segment_leaf_hsv(rgb: np.ndarray, size: tuple[int, int]) -> tuple[np.ndarray
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-    area_total = mask.shape[0] * mask.shape[1]
+    area_total = int(mask.shape[0] * mask.shape[1])
     min_area = max(64, int(area_total * 0.01))
 
     num, lab, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     keep = np.zeros_like(mask)
-    for i in range(1, num):
-        if stats[i, cv2.CC_STAT_AREA] >= min_area:
+    for i in range(1, int(num)):
+        if int(stats[i, cv2.CC_STAT_AREA]) >= int(min_area):
             keep[lab == i] = 255
+
+    if int(np.count_nonzero(keep)) == 0:
+        keep[:] = 255
+        return rgb, keep
 
     keep = cv2.GaussianBlur(keep, (5, 5), 0)
     keep = (keep > 0).astype(np.uint8) * 255

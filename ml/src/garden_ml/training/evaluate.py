@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -12,10 +13,10 @@ import pandas as pd
 from loguru import logger
 from sklearn.metrics import confusion_matrix
 
-from garden_ml.config.constants import ENCODER_FILE, MODEL_FILE
+from garden_ml.config.constants import ENCODER_FILE, MODEL_FILE, TRAIN_META_FILE
 from garden_ml.config.logging import setup_logging
 from garden_ml.data.manifest import samples_from_manifest, scan_folder_dataset, write_json
-from garden_ml.features.extract import ExtractOptions, extract_102_from_path, extract_102_from_rgb
+from garden_ml.features.extract import ExtractOptions, extract_features_from_path, extract_features_from_rgb
 from garden_ml.image.photometric import brightness_contrast_rgb, gamma_rgb
 from garden_ml.training.train import compute_metrics
 
@@ -24,6 +25,16 @@ def load_artifacts(artifacts_dir: Path) -> tuple[Any, Any]:
     model = joblib.load(artifacts_dir / MODEL_FILE)
     le = joblib.load(artifacts_dir / ENCODER_FILE)
     return model, le
+
+
+def load_training_meta(artifacts_dir: Path) -> dict[str, Any]:
+    p = artifacts_dir / TRAIN_META_FILE
+    if not p.is_file():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _load_test_manifest_csv(p: Path) -> list[tuple[Path, str]]:
@@ -66,7 +77,7 @@ def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest
     times_feat: list[float] = []
     for p, c in items:
         t0 = time.perf_counter()
-        feat = extract_102_from_path(p, opts)
+        feat = extract_features_from_path(p, opts)
         t1 = time.perf_counter()
         X_list.append(feat)
         y_list.append(c)
@@ -79,7 +90,7 @@ def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest
     t2 = time.perf_counter()
     y_pred = model.predict(X)
     t3 = time.perf_counter()
-    pred_ms = (t3 - t2) * 1000.0 / max(1, X.shape[0])
+    pred_ms = (t3 - t2) * 1000.0 / max(1, int(X.shape[0]))
 
     metrics = compute_metrics(y_enc, y_pred, labels=list(le.classes_))
     cm = confusion_matrix(y_enc, y_pred)
@@ -92,7 +103,13 @@ def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest
         "total_ms_per_sample_est": float(np.mean(times_feat) + pred_ms),
     }
 
-    return {"metrics": metrics, "confusion_matrix": cm.tolist(), "classes": list(le.classes_), "latency": latency}
+    return {
+        "normalize": bool(normalize),
+        "metrics": metrics,
+        "confusion_matrix": cm.tolist(),
+        "classes": list(le.classes_),
+        "latency": latency,
+    }
 
 
 def illumination_sensitivity(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest: str) -> dict[str, Any]:
@@ -118,9 +135,9 @@ def illumination_sensitivity(dataset_dir: Path, artifacts_dir: Path, img_size: i
         y_list: list[str] = []
         for p, c in items:
             rgb = np.asarray(Image.open(p).convert("RGB"), dtype=np.uint8)
-            x = gamma_rgb(rgb, gamma) if gamma != 1.0 else rgb
-            x = brightness_contrast_rgb(x, alpha=alpha, beta=beta) if (alpha != 1.0 or beta != 0.0) else x
-            feat = extract_102_from_rgb(x, opts)
+            x = gamma_rgb(rgb, gamma) if float(gamma) != 1.0 else rgb
+            x = brightness_contrast_rgb(x, alpha=float(alpha), beta=float(beta)) if (float(alpha) != 1.0 or float(beta) != 0.0) else x
+            feat = extract_features_from_rgb(x, opts)
             X_list.append(feat)
             y_list.append(c)
 
@@ -145,7 +162,7 @@ def main() -> int:
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset_dir", type=str, default="dataset_aug")
-    ap.add_argument("--artifacts_dir", type=str, default="artifacts/model_registry/v0002")
+    ap.add_argument("--artifacts_dir", type=str, default="artifacts/model_registry/v0003")
     ap.add_argument("--img_size", type=int, default=128)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--manifest", type=str, default="augmentation_manifest.csv")
@@ -156,12 +173,24 @@ def main() -> int:
     out_dir = artifacts_dir / "evaluation"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("eval_start dataset_dir={} artifacts_dir={} img_size={} manifest={}", str(dataset_dir), str(artifacts_dir), int(args.img_size), str(args.manifest))
+    meta = load_training_meta(artifacts_dir)
+    trained_norm = bool(meta.get("photometric_normalize", False))
 
+    logger.info(
+        "eval_start dataset_dir={} artifacts_dir={} img_size={} manifest={} trained_photometric_normalize={}",
+        str(dataset_dir),
+        str(artifacts_dir),
+        int(args.img_size),
+        str(args.manifest),
+        bool(trained_norm),
+    )
+
+    eval_trained = eval_dataset(dataset_dir, artifacts_dir, img_size=int(args.img_size), manifest=args.manifest, normalize=trained_norm)
     eval_base = eval_dataset(dataset_dir, artifacts_dir, img_size=int(args.img_size), manifest=args.manifest, normalize=False)
     eval_norm = eval_dataset(dataset_dir, artifacts_dir, img_size=int(args.img_size), manifest=args.manifest, normalize=True)
     sens = illumination_sensitivity(dataset_dir, artifacts_dir, img_size=int(args.img_size), manifest=args.manifest)
 
+    write_json(out_dir / "eval_trained.json", eval_trained)
     write_json(out_dir / "eval_base.json", eval_base)
     write_json(out_dir / "eval_normalized.json", eval_norm)
     write_json(out_dir / "illumination_sensitivity.json", sens)

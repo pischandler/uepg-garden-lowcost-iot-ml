@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import random
@@ -35,7 +36,7 @@ from garden_ml.config.logging import setup_logging
 from garden_ml.config.settings import Settings
 from garden_ml.data.manifest import class_distribution, samples_from_manifest, scan_folder_dataset, write_json
 from garden_ml.data.splits import expand_groups, stratified_group_split
-from garden_ml.features.extract import ExtractOptions, extract_102_from_path
+from garden_ml.features.extract import ExtractOptions, extract_features_from_path
 from garden_ml.features.schema import SCHEMA, write_schema
 
 
@@ -123,7 +124,7 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, labels: list[str]) -
 
     p, r, f1, sup = precision_recall_fscore_support(y_true, y_pred, labels=np.arange(len(labels)), zero_division=0)
     macro_f1 = float(np.mean(f1))
-    weighted_f1 = float(np.average(f1, weights=sup)) if sup.sum() > 0 else 0.0
+    weighted_f1 = float(np.average(f1, weights=sup)) if int(sup.sum()) > 0 else 0.0
 
     per_class = []
     for i, name in enumerate(labels):
@@ -189,10 +190,28 @@ def _write_manifest_csv(path: Path, rows: list[tuple[str, str, str, str]]) -> No
             w.writerow(list(r))
 
 
+def _kind_counts(rows: list[tuple[str, str, str, str]]) -> dict[str, int]:
+    d: dict[str, int] = {}
+    for _p, _c, _g, k in rows:
+        d[k] = d.get(k, 0) + 1
+    return dict(sorted(d.items(), key=lambda x: x[0]))
+
+
+def _md5_file(p: Path) -> str:
+    h = hashlib.md5()
+    with p.open("rb") as f:
+        while True:
+            b = f.read(1024 * 1024)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset_dir", type=str, default="dataset_aug")
-    ap.add_argument("--output_dir", type=str, default="artifacts/model_registry/v0002")
+    ap.add_argument("--output_dir", type=str, default="artifacts/model_registry/v0003")
     ap.add_argument("--img_size", type=int, default=128)
     ap.add_argument("--test_size", type=float, default=0.30)
     ap.add_argument("--seed", type=int, default=42)
@@ -240,6 +259,10 @@ def main() -> int:
     if not samples:
         raise SystemExit("no samples found")
 
+    all_kind_counts = _kind_counts([(str(p), str(c), str(g), str(k)) for p, c, g, k in samples])
+    if all_kind_counts.get("aug", 0) == 0:
+        logger.warning("no_aug_samples_detected kind_counts={}", str(all_kind_counts))
+
     groups: dict[str, dict[str, Any]] = {}
     for path, cls, gid, kind in samples:
         groups.setdefault(gid, {"class": cls, "items": []})
@@ -250,11 +273,15 @@ def main() -> int:
 
     split = stratified_group_split(group_ids, group_labels, test_size=float(args.test_size), seed=int(args.seed))
 
+    overlap_groups = split.train_groups.intersection(split.test_groups)
+    if overlap_groups:
+        raise SystemExit(f"group leakage detected: overlap_groups={len(overlap_groups)}")
+
     expanded_samples: list[tuple[str, str, str, str]] = []
     for gid, payload in groups.items():
         cls = payload["class"]
         for path, kind in payload["items"]:
-            expanded_samples.append((path, cls, gid, kind))
+            expanded_samples.append((str(path), str(cls), str(gid), str(kind)))
 
     train_items, test_items, train_g, test_g = expand_groups(
         expanded_samples, split.train_groups, split.test_groups, test_kinds_only={"orig"}
@@ -270,20 +297,32 @@ def main() -> int:
         "test_groups": sorted(list(split.test_groups)),
         "n_train_samples": int(len(train_items)),
         "n_test_samples": int(len(test_items)),
+        "kind_counts_all": all_kind_counts,
     }
     (out_dir / "split_groups.json").write_text(json.dumps(split_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    train_manifest_rows = []
+    train_manifest_rows: list[tuple[str, str, str, str]] = []
     for (p, c), gid in zip(train_items, train_g):
         train_manifest_rows.append((str(p), str(c), str(gid), _infer_kind_from_path(str(p))))
-    test_manifest_rows = []
+    test_manifest_rows: list[tuple[str, str, str, str]] = []
     for (p, c), gid in zip(test_items, test_g):
         test_manifest_rows.append((str(p), str(c), str(gid), "orig"))
 
     _write_manifest_csv(out_dir / "train_manifest.csv", train_manifest_rows)
     _write_manifest_csv(out_dir / "test_manifest.csv", test_manifest_rows)
 
-    logger.info("split_done train={} test={} groups_train={} groups_test={}", len(train_items), len(test_items), len(split.train_groups), len(split.test_groups))
+    train_kind_counts = _kind_counts(train_manifest_rows)
+    test_kind_counts = _kind_counts(test_manifest_rows)
+
+    logger.info(
+        "split_done train={} test={} groups_train={} groups_test={} train_kind_counts={} test_kind_counts={}",
+        len(train_items),
+        len(test_items),
+        len(split.train_groups),
+        len(split.test_groups),
+        str(train_kind_counts),
+        str(test_kind_counts),
+    )
 
     opts = ExtractOptions(img_size=int(args.img_size), photometric_normalize=bool(args.photometric_normalize))
 
@@ -297,16 +336,16 @@ def main() -> int:
     t0 = time.time()
     for (p, c), gid in tqdm(list(zip(train_items, train_g)), desc="features_train", unit="img", mininterval=1.0):
         try:
-            X_train_list.append(extract_102_from_path(Path(p), opts))
-            y_train_list.append(c)
-            g_train_list.append(gid)
+            X_train_list.append(extract_features_from_path(Path(p), opts))
+            y_train_list.append(str(c))
+            g_train_list.append(str(gid))
         except Exception as e:
             errors.append({"path": str(p), "error": str(e)})
 
     for p, c in tqdm(test_items, desc="features_test", unit="img", mininterval=1.0):
         try:
-            X_test_list.append(extract_102_from_path(Path(p), opts))
-            y_test_list.append(c)
+            X_test_list.append(extract_features_from_path(Path(p), opts))
+            y_test_list.append(str(c))
         except Exception as e:
             errors.append({"path": str(p), "error": str(e)})
 
@@ -319,18 +358,27 @@ def main() -> int:
     y_test = np.array(y_test_list, dtype=object)
     g_train_arr = np.array(g_train_list, dtype=object)
 
-    logger.info("features_done train={} test={} failed={} elapsed_s={:.3f}", X_train.shape[0], X_test.shape[0], len(errors), time.time() - t0)
+    logger.info(
+        "features_done train={} test={} failed={} elapsed_s={:.3f}",
+        X_train.shape[0],
+        X_test.shape[0],
+        len(errors),
+        time.time() - t0,
+    )
 
     le = LabelEncoder()
-    le.fit(np.concatenate([y_train, y_test], axis=0))
+    le.fit(y_train)
+    if not set(np.unique(y_test)).issubset(set(le.classes_)):
+        raise SystemExit("label set mismatch: test has unseen classes")
+
     y_train_enc = le.transform(y_train)
     y_test_enc = le.transform(y_test)
 
     write_schema(out_dir / FEATURE_SCHEMA_FILE)
 
-    df_all = pd.DataFrame(np.vstack([X_train, X_test]), columns=[f"f{i:03d}" for i in range(X_train.shape[1])])
+    df_all = pd.DataFrame(np.vstack([X_train, X_test]), columns=[f"f{i:03d}" for i in range(int(X_train.shape[1]))])
     df_all["label"] = np.concatenate([y_train, y_test], axis=0)
-    df_all.to_csv(out_dir / "features_102.csv", index=False, encoding="utf-8")
+    df_all.to_csv(out_dir / "features_188.csv", index=False, encoding="utf-8")
 
     cv = group_cv(n_splits=int(args.cv_folds), seed=int(args.seed))
     specs = build_specs(seed=int(args.seed))
@@ -385,9 +433,9 @@ def main() -> int:
         }
         leaderboard.append(entry)
 
-        if float(metrics["macro_f1"]) > best_score:
+        if float(metrics["macro_f1"]) > float(best_score):
             best_score = float(metrics["macro_f1"])
-            best_name = spec.name
+            best_name = str(spec.name)
             best_est = grid.best_estimator_
 
         logger.info(
@@ -408,6 +456,30 @@ def main() -> int:
     joblib.dump(best_est, out_dir / MODEL_FILE)
     joblib.dump(le, out_dir / ENCODER_FILE)
 
+    train_orig = [Path(p) for (p, _c), k in zip(train_items, [_infer_kind_from_path(str(p)) for p, _c in train_items]) if k == "orig"]
+    test_orig = [Path(p) for (p, _c) in test_items]
+
+    train_hash = {}
+    for p in tqdm(train_orig, desc="hash_train_orig", unit="img", mininterval=1.0):
+        train_hash[_md5_file(p)] = str(p)
+
+    dup = []
+    for p in tqdm(test_orig, desc="hash_test_orig", unit="img", mininterval=1.0):
+        h = _md5_file(p)
+        if h in train_hash:
+            dup.append({"hash": h, "train_path": train_hash[h], "test_path": str(p)})
+            if len(dup) >= 50:
+                break
+
+    leakage_report = {
+        "groups_overlap": int(len(overlap_groups)),
+        "train_kind_counts": train_kind_counts,
+        "test_kind_counts": test_kind_counts,
+        "orig_hash_overlap_count": int(len(dup)),
+        "orig_hash_overlap_examples": dup,
+    }
+    (out_dir / "leakage_check.json").write_text(json.dumps(leakage_report, ensure_ascii=False, indent=2), encoding="utf-8")
+
     meta = {
         "final_model": best_name,
         "final_macro_f1": float(best_score),
@@ -417,12 +489,20 @@ def main() -> int:
         "cv_folds": int(args.cv_folds),
         "classes": list(le.classes_),
         "feature_schema": SCHEMA.as_dict(),
+        "feature_schema_sha1": SCHEMA.sha1(),
         "photometric_normalize": bool(args.photometric_normalize),
         "dataset_dir": str(dataset_dir),
         "n_train": int(X_train.shape[0]),
         "n_test": int(X_test.shape[0]),
+        "features_dim": int(X_train.shape[1]),
         "class_distribution_all": class_distribution([(cls, "") for cls in np.concatenate([y_train, y_test], axis=0)]),
+        "class_distribution_train": class_distribution([(cls, "") for cls in y_train]),
+        "class_distribution_test": class_distribution([(cls, "") for cls in y_test]),
         "errors_count": int(len(errors)),
+        "kind_counts_all": all_kind_counts,
+        "train_kind_counts": train_kind_counts,
+        "test_kind_counts": test_kind_counts,
+        "leakage_check": {"groups_overlap": int(len(overlap_groups)), "orig_hash_overlap_count": int(len(dup))},
     }
     (out_dir / TRAIN_META_FILE).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     if errors:
@@ -437,6 +517,7 @@ def main() -> int:
         "split_groups": out_dir / "split_groups.json",
         "train_manifest": out_dir / "train_manifest.csv",
         "test_manifest": out_dir / "test_manifest.csv",
+        "leakage_check": out_dir / "leakage_check.json",
     }
     params = {
         "seed": int(args.seed),
@@ -445,8 +526,10 @@ def main() -> int:
         "cv_folds": int(args.cv_folds),
         "final_model": best_name,
         "photometric_normalize": bool(args.photometric_normalize),
+        "features_dim": int(X_train.shape[1]),
+        "feature_schema_sha1": SCHEMA.sha1(),
     }
-    tags = {"pipeline": "features_102", "selection": "best_macro_f1", "final_model": best_name}
+    tags = {"pipeline": "features_188", "selection": "best_macro_f1", "final_model": best_name}
     maybe_mlflow_log(params=params, metrics={"final_macro_f1": float(best_score)}, artifacts=artifacts, tags=tags, enabled=st.mlflow_enabled)
 
     logger.info("train_done artifacts_dir={} final_model={} macro_f1={:.4f} errors_count={}", str(out_dir), best_name, float(best_score), len(errors))
