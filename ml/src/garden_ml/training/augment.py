@@ -66,14 +66,7 @@ def build_aug_pipeline() -> tuple[A.Compose, dict]:
             A.OneOf(
                 [
                     A.GaussianBlur(blur_limit=(3, 5), p=1.0),
-                    A.GaussNoise(var_limit=(5.0, 25.0), p=1.0),
-                ],
-                p=0.30,
-            ),
-            A.OneOf(
-                [
-                    A.ImageCompression(quality_lower=55, quality_upper=95, p=1.0),
-                    A.RandomShadow(num_shadows_lower=1, num_shadows_upper=2, shadow_dimension=5, p=1.0),
+                    A.MedianBlur(blur_limit=3, p=1.0),
                 ],
                 p=0.25,
             ),
@@ -92,9 +85,7 @@ def build_aug_pipeline() -> tuple[A.Compose, dict]:
         "sat_shift": 15,
         "val_shift": 10,
         "blur_kernel": [3, 5],
-        "gauss_noise_var": [5.0, 25.0],
-        "jpeg_quality": [55, 95],
-        "random_shadow": {"min": 1, "max": 2},
+        "median_blur": 3,
     }
     return pipeline, desc
 
@@ -162,8 +153,12 @@ def main() -> int:
     )
 
     rows: list[list[str]] = []
-    include_originals = not args.no_originals
+    include_originals = not bool(args.no_originals)
     size = (int(args.img_size), int(args.img_size))
+
+    saved_orig = 0
+    saved_aug = 0
+    failed = 0
 
     bar = tqdm(total=len(items), desc="augmenting", unit="img", mininterval=1.0)
     for c, img_path in items:
@@ -172,12 +167,14 @@ def main() -> int:
         class_out = out_dir / c
         class_out.mkdir(parents=True, exist_ok=True)
 
+        pil = None
+        rgb = None
         try:
             pil = Image.open(img_path).convert("RGB")
             rgb = np.asarray(pil, dtype=np.uint8)
             rgb = letterbox_rgb(rgb, size=size, bg=0)
 
-            if args.segment_before_aug:
+            if bool(args.segment_before_aug):
                 rgb, _mask = segment_leaf_hsv(rgb, size=size)
 
             src_rel = str(img_path.resolve().relative_to(in_dir.resolve()))
@@ -187,6 +184,7 @@ def main() -> int:
                 out_orig = class_out / f"{img_path.stem}__orig.jpg"
                 save_jpeg(rgb, out_orig, quality=int(args.jpeg_quality))
                 rows.append([c, group_id, src_rel, str(out_orig.relative_to(out_dir)), "orig", "", str(seed_img), "ok", ""])
+                saved_orig += 1
 
             for k in range(1, int(args.aug_per_image) + 1):
                 rng = np.random.default_rng(seed_img + k)
@@ -196,8 +194,10 @@ def main() -> int:
                 out_aug = class_out / f"{img_path.stem}__aug{k:03d}.jpg"
                 save_jpeg(auged, out_aug, quality=int(args.jpeg_quality))
                 rows.append([c, group_id, src_rel, str(out_aug.relative_to(out_dir)), "aug", str(k), str(seed_img), "ok", ""])
+                saved_aug += 1
 
         except Exception as e:
+            failed += 1
             rows.append([c, group_id, str(img_path), "", "error", "", str(int(args.seed)), "error", str(e).replace("\n", " ").strip()])
 
     bar.close()
@@ -207,7 +207,18 @@ def main() -> int:
         w.writerow(["class", "group_id", "source_path", "output_path", "kind", "aug_index", "seed", "status", "error"])
         w.writerows(rows)
 
-    logger.info("augment_done output={} manifest={} config={}", str(out_dir), str(manifest_path), str(config_path))
+    if int(args.aug_per_image) > 0 and saved_aug == 0:
+        raise SystemExit("augmentation produced zero augmented samples (check pipeline and output dir)")
+
+    logger.info(
+        "augment_done output={} manifest={} config={} saved_orig={} saved_aug={} failed={}",
+        str(out_dir),
+        str(manifest_path),
+        str(config_path),
+        int(saved_orig),
+        int(saved_aug),
+        int(failed),
+    )
     return 0
 
 

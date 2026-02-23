@@ -1,6 +1,6 @@
 import numpy as np
 
-from garden_ml.inference.predictor import predict_topk, LoadedArtifacts
+from garden_ml.inference.predictor import LoadedArtifacts, predict_topk
 
 
 class DummyEnc:
@@ -12,6 +12,9 @@ class DummyEnc:
 
 
 class DummyModel:
+    def __init__(self):
+        self.n_features_in_ = 188
+
     def predict_proba(self, X):
         n = X.shape[0]
         return np.tile(np.array([[0.2, 0.8]], dtype=np.float64), (n, 1))

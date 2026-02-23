@@ -4,7 +4,8 @@ from pathlib import Path
 
 ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 DEFAULT_IMG_SIZE = 128
-FEATURES_DIM = 102
+
+FEATURES_DIM = 188
 
 DEFAULT_AUG_MANIFEST = "augmentation_manifest.csv"
 DEFAULT_AUG_CONFIG = "augmentation_config.json"

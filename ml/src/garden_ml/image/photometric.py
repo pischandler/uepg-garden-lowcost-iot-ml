@@ -8,7 +8,7 @@ def gray_world_rgb(rgb: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     x = rgb.astype(np.float32)
     means = x.reshape(-1, 3).mean(axis=0)
     g = float(means.mean())
-    scale = g / (means + eps)
+    scale = g / (means + float(eps))
     y = x * scale.reshape(1, 1, 3)
     return np.clip(y, 0, 255).astype(np.uint8)
 
@@ -39,7 +39,38 @@ def brightness_contrast_rgb(rgb: np.ndarray, alpha: float, beta: float) -> np.nd
     return np.clip(y, 0, 255).astype(np.uint8)
 
 
-def normalize_pipeline_rgb(rgb: np.ndarray) -> np.ndarray:
+def clahe_hsv_v_rgb(
+    rgb: np.ndarray,
+    mask: np.ndarray | None = None,
+    clip_limit: float = 2.0,
+    tile_grid: tuple[int, int] = (8, 8),
+) -> np.ndarray:
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    h, s, v = cv2.split(hsv)
+
+    fg = None
+    if mask is not None:
+        fg = mask > 0
+        if not bool(np.any(fg)):
+            return rgb.astype(np.uint8, copy=False)
+        v_work = v.copy()
+        fill = int(np.median(v[fg]))
+        v_work[~fg] = fill
+    else:
+        v_work = v
+
+    clahe = cv2.createCLAHE(clipLimit=float(clip_limit), tileGridSize=tile_grid)
+    v_eq = clahe.apply(v_work)
+
+    if fg is not None:
+        v_eq[~fg] = v[~fg]
+
+    hsv2 = cv2.merge([h, s, v_eq])
+    out = cv2.cvtColor(hsv2, cv2.COLOR_HSV2RGB)
+    return out.astype(np.uint8)
+
+
+def normalize_pipeline_rgb(rgb: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
     x = gray_world_rgb(rgb)
-    x = clahe_lab_rgb(x, clip_limit=2.0, tile_grid=(8, 8))
+    x = clahe_hsv_v_rgb(x, mask=mask, clip_limit=2.0, tile_grid=(8, 8))
     return x

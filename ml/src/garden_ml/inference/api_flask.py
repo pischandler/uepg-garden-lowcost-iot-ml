@@ -72,7 +72,9 @@ def _build_app(st: Settings) -> Flask:
                 "topk": topk,
                 "timings_ms": timings,
                 "meta": meta,
-                "photometric_normalize_used": bool(arts.photometric_normalize_default if normalize_override is None else normalize_override),
+                "photometric_normalize_used": bool(
+                    arts.photometric_normalize_default if normalize_override is None else normalize_override
+                ),
             }
             ep = str(meta.get("endpoint", "infer"))
             REQ_COUNT.labels(endpoint=ep, status="200").inc()
@@ -123,16 +125,16 @@ def _build_app(st: Settings) -> Flask:
 
         device_id_req = str(payload.get("device_id") or "").strip()
         normalize_override = payload.get("normalize", None)
-        if isinstance(normalize_override, bool):
-            norm = normalize_override
-        else:
-            norm = None
+        norm = normalize_override if isinstance(normalize_override, bool) else None
 
         try:
-            data, headers = fetch_bytes(url, timeout_s=8.0)
+            data, headers = fetch_bytes(url, timeout_s=8.0, max_bytes=int(st.max_content_length))
         except requests.RequestException as e:
             REQ_COUNT.labels(endpoint="/analisar_url", status="502").inc()
             return jsonify({"erro": "Falha ao buscar imagem.", "mensagem": str(e)}), 502
+        except Exception as e:
+            REQ_COUNT.labels(endpoint="/analisar_url", status="400").inc()
+            return jsonify({"erro": "URL inválida ou imagem grande demais.", "mensagem": str(e)}), 400
 
         device_id = device_id_req or headers.get("X-Device-Id", "")
 

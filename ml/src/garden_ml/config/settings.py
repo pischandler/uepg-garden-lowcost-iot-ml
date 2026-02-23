@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     max_content_length: int = Field(default=8 * 1024 * 1024)
     topk: int = Field(default=3)
 
-    artifacts_dir: Path = Field(default=Path("artifacts") / "model_registry" / "v0002")
+    artifacts_dir: Path = Field(default=Path("artifacts") / "model_registry" / "v0003")
     reports_dir: Path = Field(default=Path("reports"))
 
     mlflow_enabled: bool = Field(default=True)

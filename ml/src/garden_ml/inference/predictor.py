@@ -11,7 +11,7 @@ import numpy as np
 
 from garden_ml.config.constants import ENCODER_FILE, MODEL_FILE, TRAIN_META_FILE
 from garden_ml.data.io import bgr_to_rgb, decode_bgr_from_bytes
-from garden_ml.features.extract import ExtractOptions, extract_102_from_rgb
+from garden_ml.features.extract import ExtractOptions, extract_features_from_rgb
 
 
 @dataclass(frozen=True)
@@ -49,10 +49,15 @@ def predict_topk(
     use_norm = arts.photometric_normalize_default if photometric_normalize is None else bool(photometric_normalize)
 
     t0 = time.perf_counter()
-    feat = extract_102_from_rgb(rgb, ExtractOptions(img_size=img_size, photometric_normalize=use_norm))
+    feat = extract_features_from_rgb(rgb, ExtractOptions(img_size=img_size, photometric_normalize=use_norm))
     t1 = time.perf_counter()
 
     X = feat.reshape(1, -1).astype(np.float64)
+
+    if hasattr(arts.model, "n_features_in_"):
+        nf = int(getattr(arts.model, "n_features_in_"))
+        if nf != int(X.shape[1]):
+            raise RuntimeError(f"model expects {nf} features, got {int(X.shape[1])}")
 
     t2 = time.perf_counter()
     if not hasattr(arts.model, "predict_proba"):
