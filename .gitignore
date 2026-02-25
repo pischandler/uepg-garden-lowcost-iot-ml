@@ -1,11 +1,11 @@
-# Ignore tudo por padrão
+﻿# Ignore tudo por padrÃ£o
 **
 
-# Permite apenas o necessário para build da imagem
+# Permite apenas o necessÃ¡rio para build da imagem
 !ml/**
 !docker-compose.yml
 
-# Segurança/ambiente
+# SeguranÃ§a/ambiente
 .env
 .env.*
 **/secrets.h
@@ -19,7 +19,7 @@ venv/
 .pytest_cache/
 .ruff_cache/
 
-# Repositório / CI / firmware / datasets / outputs
+# RepositÃ³rio / CI / firmware / datasets / outputs
 .git/
 .github/
 firmware/
@@ -35,3 +35,18 @@ salvas/
 outputs/
 runs/
 logs/
+
+# Narrow scope: keep firmware ignored except modular Web UI sources
+!firmware/
+!firmware/smart-tomato-garden/
+firmware/smart-tomato-garden/**
+!firmware/smart-tomato-garden/web/
+!firmware/smart-tomato-garden/web/index.template.html
+!firmware/smart-tomato-garden/web/styles.css
+!firmware/smart-tomato-garden/web/js/
+!firmware/smart-tomato-garden/web/js/*.js
+!firmware/smart-tomato-garden/web/i18n/
+!firmware/smart-tomato-garden/web/i18n/*.json
+
+
+

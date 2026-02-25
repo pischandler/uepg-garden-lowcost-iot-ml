@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Smart Tomato Garden</title>
+  <style>
+/*__INLINE_STYLES__*/
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div class="heroTop">
+        <div>
+          <h1 data-i18n="app.title">Smart Tomato Garden</h1>
+          <p class="subtitle" data-i18n="app.subtitle">Monitoramento e controle em tempo real</p>
+        </div>
+        <div class="row">
+          <label for="langSelect" class="tiny" data-i18n="label.language">Idioma</label>
+          <select id="langSelect">
+            <option value="pt" data-i18n="lang.pt">PT</option>
+            <option value="en" data-i18n="lang.en">EN</option>
+            <option value="cn" data-i18n="lang.cn">中文</option>
+          </select>
+          <span class="tiny syncState" id="syncState" data-i18n="status.syncing">Sincronizando...</span>
+          <span class="status" id="onlineState" data-i18n="status.connecting">Conectando...</span>
+          <button id="btnRefresh" class="ghost" data-i18n="action.refresh_all">Atualizar tudo</button>
+        </div>
+      </div>
+      <div class="pills">
+        <div class="pill"><span data-i18n="pill.device">Dispositivo</span><strong id="device">...</strong></div>
+        <div class="pill"><span data-i18n="pill.ip">IP</span><strong id="ip">...</strong></div>
+        <div class="pill"><span data-i18n="pill.rssi">RSSI</span><strong id="rssi">...</strong></div>
+        <div class="pill"><span data-i18n="pill.uptime">Uptime</span><strong id="uptime">...</strong></div>
+      </div>
+    </section>
+
+    <section class="dashboardGrid">
+      <article class="card">
+        <div class="head">
+          <h2 data-i18n="dashboard.realtime">Painel em tempo real</h2>
+          <span class="tiny" data-i18n="dashboard.live_now">agora</span>
+        </div>
+        <div class="gaugeRow">
+          <div class="gaugeWrap">
+            <div class="gauge" id="gaugeSoil">
+              <div class="gaugeInner"><strong id="gaugeSoilV">-</strong><span data-i18n="sensor.soil_humidity">Umidade do solo</span></div>
+            </div>
+          </div>
+          <div class="gaugeWrap">
+            <div class="gauge" id="gaugeHum">
+              <div class="gaugeInner"><strong id="gaugeHumV">-</strong><span data-i18n="sensor.air_humidity">Umidade do ar</span></div>
+            </div>
+          </div>
+          <div class="gaugeWrap">
+            <div class="gauge" id="gaugeTemp">
+              <div class="gaugeInner"><strong id="gaugeTempV">-</strong><span data-i18n="sensor.temperature">Temperatura</span></div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="head">
+          <h2 data-i18n="dashboard.trends">Tendencias</h2>
+          <span class="tiny" data-i18n="dashboard.last_cycles">ultimos ciclos</span>
+        </div>
+        <div class="trendBlock">
+          <div class="trendHead">
+            <span data-i18n="sensor.temperature">Temperatura</span>
+            <strong id="trendTempMeta">-</strong>
+          </div>
+          <canvas id="trendTemp" class="trendCanvas" width="620" height="140"></canvas>
+        </div>
+        <div class="trendBlock">
+          <div class="trendHead">
+            <span data-i18n="sensor.soil_humidity">Umidade do solo</span>
+            <strong id="trendSoilMeta">-</strong>
+          </div>
+          <canvas id="trendSoil" class="trendCanvas" width="620" height="140"></canvas>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="head">
+          <h2 data-i18n="dashboard.inference_health">Saude da inferencia</h2>
+          <span class="tiny" data-i18n="dashboard.model_view">modelo</span>
+        </div>
+        <div class="row">
+          <div class="ring" id="inferRing">
+            <div class="ringInner">
+              <strong id="inferRate">-</strong>
+              <span data-i18n="dashboard.success_rate">taxa de acerto</span>
+            </div>
+          </div>
+          <div class="grow inferHealthMeta">
+            <div class="item"><span data-i18n="dashboard.last_latency">Ultima latencia</span><strong id="inferLatency">-</strong></div>
+            <div class="item"><span data-i18n="dashboard.infer_attempts">Tentativas</span><strong id="inferAttempt">-</strong></div>
+            <div class="item"><span data-i18n="dashboard.infer_failures">Falhas</span><strong id="inferFail">-</strong></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="head">
+          <h2 data-i18n="dashboard.pump_activity">Atividade da bomba</h2>
+          <span class="tiny" data-i18n="dashboard.recent_window">janela recente</span>
+        </div>
+        <div id="pumpTimeline" class="timelineBars"></div>
+        <div class="item mt8">
+          <span data-i18n="dashboard.pump_duty">Duty cycle</span>
+          <strong id="pumpDuty">-</strong>
+        </div>
+      </article>
+    </section>
+
+    <section class="cameraHero card">
+      <div class="head">
+        <h2 data-i18n="section.camera_live">Camera ao vivo</h2>
+        <div class="row">
+          <span class="status" id="streamState" data-i18n="status.stream_active">Stream ativo</span>
+          <label for="streamProfile" class="tiny" data-i18n="label.stream_profile">Perfil</label>
+          <select id="streamProfile">
+            <option value="auto" data-i18n="stream.profile_auto">Auto</option>
+            <option value="stable" data-i18n="stream.profile_stable">Estavel</option>
+            <option value="fast" data-i18n="stream.profile_fast">Rapido</option>
+          </select>
+          <button id="btnStream" class="ghost" data-i18n="action.pause_stream">Pausar stream</button>
+          <button id="btnSnap" class="brand" data-i18n="action.capture_photo">Capturar foto</button>
+        </div>
+      </div>
+      <div class="tiny" id="streamHint" data-i18n="stream.mode_hint_auto_mjpeg">Auto: modo rapido</div>
+      <div class="mediaWrap">
+        <img id="view" class="cameraFrame" src="/stream" alt="camera stream">
+        <div class="mediaOverlay loading" id="cameraOverlay">
+          <span class="spinner"></span>
+          <span data-i18n="loading.camera">Carregando camera...</span>
+        </div>
+      </div>
+      <div class="meta compactStats">
+        <div class="kpi"><div class="k" data-i18n="metric.stream_clients">Clientes no stream</div><div class="v" id="streamClients">0</div></div>
+        <div class="kpi"><div class="k" data-i18n="metric.total_captures">Capturas totais</div><div class="v" id="captureCount">0</div></div>
+      </div>
+      <div class="list cameraControls">
+        <div class="item">
+          <label for="framesize" data-i18n="label.resolution">Resolucao</label>
+          <select id="framesize">
+            <option value="5">QVGA (320x240)</option>
+            <option value="6">CIF (400x296)</option>
+            <option value="8">VGA (640x480)</option>
+            <option value="9">SVGA (800x600)</option>
+            <option value="10">XGA (1024x768)</option>
+            <option value="12">UXGA (1600x1200)</option>
+          </select>
+        </div>
+        <div class="item">
+          <label for="quality" data-i18n="label.jpeg_quality">Qualidade JPEG</label>
+          <div class="row"><input id="quality" type="range" min="10" max="63" step="1"><strong id="qualityV">-</strong></div>
+        </div>
+        <div class="item">
+          <label for="led" data-i18n="label.camera_led">LED da camera</label>
+          <div class="row"><input id="led" type="range" min="0" max="255" step="1"><strong id="ledV">-</strong></div>
+        </div>
+      </div>
+
+      <section class="inferenceDock">
+        <div class="diagnosisCard" id="diagnosisCard">
+          <div class="head">
+            <h2 data-i18n="section.current_diagnosis">Diagnostico Atual</h2>
+            <div class="row">
+              <span class="status" id="diagnosisStatus" data-i18n="status.loading">Carregando...</span>
+              <button id="btnRunInference" class="brand" data-i18n="action.run_inference">Rodar inferencia</button>
+            </div>
+          </div>
+          <div class="diagnosisMain loading" id="diagnosisMain">
+            <p class="diagnosisLabel" id="diagLabel" data-i18n="diagnosis.no_recent">Sem inferencia recente</p>
+            <p class="diagnosisSub" id="diagSub" data-i18n="diagnosis.waiting_data">Aguardando dados</p>
+            <p class="diagnosisMeta" id="diagMeta">latencia - | HTTP - | horario -</p>
+          </div>
+          <div class="row">
+            <button id="btnRetrySync" class="warn hidden" data-i18n="action.retry">Tentar novamente</button>
+          </div>
+          <div class="inferenceGrid">
+            <div class="subCard">
+              <h3 data-i18n="sub.top_probabilities">Top probabilidades</h3>
+              <div id="topkList" class="topkList">
+                <p class="tiny" data-i18n="state.no_data_show">Sem dados para exibir.</p>
+              </div>
+            </div>
+            <div class="subCard">
+              <h3 data-i18n="sub.capture_context">Contexto da captura</h3>
+              <div id="contextChips" class="chipWrap">
+                <span class="chip" data-i18n="state.no_recent_context">Sem contexto recente</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section class="opsGrid">
+      <article class="card">
+        <div class="head">
+          <h2 data-i18n="section.sensors">Sensores do ambiente</h2>
+          <span class="status" id="sensorFresh" data-i18n="status.reading">Lendo...</span>
+        </div>
+        <div class="meta">
+          <div class="kpi"><div class="k" data-i18n="sensor.soil_humidity">Umidade do solo</div><div class="v" id="soilPct">...</div></div>
+          <div class="kpi"><div class="k" data-i18n="sensor.soil_raw">Solo bruto (ADC)</div><div class="v" id="soilRaw">...</div></div>
+          <div class="kpi"><div class="k" data-i18n="sensor.lux_raw">Luminosidade (ADC)</div><div class="v" id="luxRaw">...</div></div>
+          <div class="kpi"><div class="k" data-i18n="sensor.temperature">Temperatura</div><div class="v" id="tempC">...</div></div>
+          <div class="kpi"><div class="k" data-i18n="sensor.air_humidity">Umidade do ar</div><div class="v" id="humPct">...</div></div>
+          <div class="kpi"><div class="k" data-i18n="sensor.dht">DHT22</div><div class="v" id="dhtOk">...</div></div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="head">
+          <h2 data-i18n="section.irrigation">Irrigacao</h2>
+          <span class="status" id="pumpState" data-i18n="status.pump_off">Bomba desligada</span>
+        </div>
+        <div class="rightColFields">
+          <div class="item"><span data-i18n="irrigation.auto_mode">Modo automatico</span><strong id="autoMode">...</strong></div>
+          <div class="item"><span data-i18n="irrigation.pump_remaining">Tempo restante da bomba</span><strong id="pumpRemaining">0 ms</strong></div>
+          <div class="item"><span data-i18n="irrigation.cooldown_remaining">Cooldown restante</span><strong id="cooldownRemaining">0 ms</strong></div>
+          <div class="item"><span data-i18n="irrigation.dry_threshold">Limiar de solo seco</span><strong id="dryThreshold">...</strong></div>
+        </div>
+        <div class="row mt10">
+          <input id="irrigationMs" type="number" min="200" max="30000" step="100" value="1500" class="grow">
+          <button id="btnIrrigate" class="brand" data-i18n="action.irrigate_now">Irrigar agora</button>
+          <button id="btnStop" class="danger" data-i18n="action.stop">Parar</button>
+        </div>
+        <div class="row mt8">
+          <button data-ms="1500" class="quick ghost">1.5s</button>
+          <button data-ms="5000" class="quick ghost">5s</button>
+          <button data-ms="10000" class="quick ghost">10s</button>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="head">
+          <h2 data-i18n="section.health">Saude e telemetria</h2>
+          <span class="tiny" id="lastSync" data-i18n="status.no_sync">sem sincronizacao</span>
+        </div>
+        <div class="rightColFields">
+          <div class="item"><span data-i18n="health.heap_free">Heap livre</span><strong id="heap">...</strong></div>
+          <div class="item"><span data-i18n="health.psram_free">PSRAM livre</span><strong id="psram">...</strong></div>
+          <div class="item"><span data-i18n="health.http_requests">HTTP requests</span><strong id="httpCount">...</strong></div>
+          <div class="item"><span data-i18n="health.mqtt_pub">Publicacoes MQTT</span><strong id="mqttPub">...</strong></div>
+          <div class="item"><span data-i18n="health.mqtt_fail">Falhas MQTT</span><strong id="mqttFail">...</strong></div>
+          <div class="item"><span data-i18n="health.infer_ok">Inferencias OK</span><strong id="inferOk">...</strong></div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="head">
+          <h2 data-i18n="section.events">Eventos recentes</h2>
+          <span class="tiny" data-i18n="events.last_20">ultimos 20 eventos</span>
+        </div>
+        <ul class="feed" id="feed">
+          <li class="emptyFeed" data-i18n="events.none">Nenhum evento ainda</li>
+        </ul>
+      </article>
+
+      <article class="card wide">
+        <details>
+          <summary data-i18n="section.tech_mode">Modo tecnico (JSON)</summary>
+          <div class="debugGrid">
+            <div class="debugBlock">
+              <h3 data-i18n="section.last_inference">Ultima inferencia</h3>
+              <pre id="inferenceJson">sem dados</pre>
+            </div>
+            <div class="debugBlock">
+              <h3 data-i18n="section.raw_debug">Debug bruto</h3>
+              <pre id="rawJson">sem dados</pre>
+            </div>
+          </div>
+        </details>
+      </article>
+    </section>
+  </main>
+  <div id="toastStack" class="toastStack" aria-live="polite"></div>
+
+  <script>
+/*__INLINE_SCRIPTS__*/
+  </script>
+</body>
+</html>
