@@ -10,6 +10,13 @@
 </head>
 <body>
   <main class="shell">
+    <nav class="modeTabs" aria-label="Modo do painel">
+      <button class="tab is-active" data-tab="overview" data-i18n="tab.overview">Visao geral</button>
+      <button class="tab" data-tab="camera" data-i18n="tab.camera">Camera</button>
+      <button class="tab" data-tab="irrigation" data-i18n="tab.irrigation">Irrigacao</button>
+      <button class="tab" data-tab="technical" data-i18n="tab.technical">Tecnico</button>
+    </nav>
+
     <section class="hero">
       <div class="heroTop">
         <div>
@@ -23,8 +30,8 @@
             <option value="en" data-i18n="lang.en">EN</option>
             <option value="cn" data-i18n="lang.cn">中文</option>
           </select>
-          <span class="tiny syncState" id="syncState" data-i18n="status.syncing">Sincronizando...</span>
-          <span class="status" id="onlineState" data-i18n="status.connecting">Conectando...</span>
+          <span class="tiny syncState" id="syncState" data-i18n="status.syncing" aria-live="polite">Sincronizando...</span>
+          <span class="status" id="onlineState" data-i18n="status.connecting" aria-live="polite">Conectando...</span>
           <button id="btnRefresh" class="ghost" data-i18n="action.refresh_all">Atualizar tudo</button>
         </div>
       </div>
@@ -36,7 +43,7 @@
       </div>
     </section>
 
-    <section class="dashboardGrid">
+    <section class="dashboardGrid panel" data-panel="overview">
       <article class="card">
         <div class="head">
           <h2 data-i18n="dashboard.realtime">Painel em tempo real</h2>
@@ -64,7 +71,15 @@
       <article class="card">
         <div class="head">
           <h2 data-i18n="dashboard.trends">Tendencias</h2>
-          <span class="tiny" data-i18n="dashboard.last_cycles">ultimos ciclos</span>
+          <div class="row">
+            <label for="trendRange" class="tiny" data-i18n="dashboard.range">janela</label>
+            <select id="trendRange">
+              <option value="5m">5m</option>
+              <option value="30m" selected>30m</option>
+              <option value="2h">2h</option>
+            </select>
+            <button id="btnExportTrends" class="ghost" data-i18n="dashboard.export_csv">Exportar CSV</button>
+          </div>
         </div>
         <div class="trendBlock">
           <div class="trendHead">
@@ -115,11 +130,14 @@
       </article>
     </section>
 
-    <section class="cameraHero card">
+    <section class="cameraHero card panel" data-panel="overview camera">
       <div class="head">
         <h2 data-i18n="section.camera_live">Camera ao vivo</h2>
         <div class="row">
           <span class="status" id="streamState" data-i18n="status.stream_active">Stream ativo</span>
+          <span class="tiny hud" id="hudTransport">mode -</span>
+          <span class="tiny hud" id="hudFps">fps -</span>
+          <span class="tiny hud" id="hudReconnect">reconnect 0</span>
           <label for="streamProfile" class="tiny" data-i18n="label.stream_profile">Perfil</label>
           <select id="streamProfile">
             <option value="auto" data-i18n="stream.profile_auto">Auto</option>
@@ -131,6 +149,10 @@
         </div>
       </div>
       <div class="tiny" id="streamHint" data-i18n="stream.mode_hint_auto_mjpeg">Auto: modo rapido</div>
+      <label class="tiny safeModeWrap" for="safeMode">
+        <input id="safeMode" type="checkbox">
+        <span data-i18n="stream.safe_mode">Modo seguro de stream</span>
+      </label>
       <div class="mediaWrap">
         <img id="view" class="cameraFrame" src="/stream" alt="camera stream">
         <div class="mediaOverlay loading" id="cameraOverlay">
@@ -169,7 +191,7 @@
           <div class="head">
             <h2 data-i18n="section.current_diagnosis">Diagnostico Atual</h2>
             <div class="row">
-              <span class="status" id="diagnosisStatus" data-i18n="status.loading">Carregando...</span>
+              <span class="status" id="diagnosisStatus" data-i18n="status.loading" aria-live="polite">Carregando...</span>
               <button id="btnRunInference" class="brand" data-i18n="action.run_inference">Rodar inferencia</button>
             </div>
           </div>
@@ -178,6 +200,7 @@
             <p class="diagnosisSub" id="diagSub" data-i18n="diagnosis.waiting_data">Aguardando dados</p>
             <p class="diagnosisMeta" id="diagMeta">latencia - | HTTP - | horario -</p>
           </div>
+          <div id="guidedAlert" class="guidedAlert hidden" aria-live="polite"></div>
           <div class="row">
             <button id="btnRetrySync" class="warn hidden" data-i18n="action.retry">Tentar novamente</button>
           </div>
@@ -199,8 +222,8 @@
       </section>
     </section>
 
-    <section class="opsGrid">
-      <article class="card">
+    <section class="opsGrid panel" data-panel="overview irrigation">
+      <article class="card" data-panel-card="sensors">
         <div class="head">
           <h2 data-i18n="section.sensors">Sensores do ambiente</h2>
           <span class="status" id="sensorFresh" data-i18n="status.reading">Lendo...</span>
@@ -215,7 +238,7 @@
         </div>
       </article>
 
-      <article class="card">
+      <article class="card" data-panel-card="irrigation">
         <div class="head">
           <h2 data-i18n="section.irrigation">Irrigacao</h2>
           <span class="status" id="pumpState" data-i18n="status.pump_off">Bomba desligada</span>
@@ -238,7 +261,7 @@
         </div>
       </article>
 
-      <article class="card">
+      <article class="card" data-panel-card="health">
         <div class="head">
           <h2 data-i18n="section.health">Saude e telemetria</h2>
           <span class="tiny" id="lastSync" data-i18n="status.no_sync">sem sincronizacao</span>
@@ -253,17 +276,17 @@
         </div>
       </article>
 
-      <article class="card">
+      <article class="card" data-panel-card="events">
         <div class="head">
           <h2 data-i18n="section.events">Eventos recentes</h2>
           <span class="tiny" data-i18n="events.last_20">ultimos 20 eventos</span>
         </div>
-        <ul class="feed" id="feed">
+        <ul class="feed" id="feed" aria-live="polite">
           <li class="emptyFeed" data-i18n="events.none">Nenhum evento ainda</li>
         </ul>
       </article>
 
-      <article class="card wide">
+      <article class="card wide panel" data-panel="technical">
         <details>
           <summary data-i18n="section.tech_mode">Modo tecnico (JSON)</summary>
           <div class="debugGrid">

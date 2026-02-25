@@ -1,0 +1,7 @@
+{
+  "channel": "prod",
+  "ota_enabled": true,
+  "rollout_pct": 5,
+  "requires_manual_approval": true,
+  "telemetry_level": "minimal"
+}

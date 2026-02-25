@@ -4,6 +4,7 @@
 
 static const char *EVENTS_PATH = "/events.log";
 static const char *INFER_CSV_PATH = "/inference.csv";
+static const char *INFER_FEEDBACK_CSV_PATH = "/inference_feedback.csv";
 static uint32_t lastFlushMs = 0;
 
 void Storage::begin()
@@ -79,6 +80,27 @@ void Storage::appendInferenceCsv(const char *line)
   // evita estourar flash
   if (sz > (2UL * 1024UL * 1024UL))
     LittleFS.remove(INFER_CSV_PATH);
+}
+
+void Storage::appendInferenceFeedbackCsv(const char *line)
+{
+  if (!LittleFS.exists(INFER_FEEDBACK_CSV_PATH))
+  {
+    File h = LittleFS.open(INFER_FEEDBACK_CSV_PATH, "w");
+    if (h)
+    {
+      h.println("ts_ms,device_id,predicted,corrected,labeler,notes");
+      h.close();
+    }
+  }
+
+  File f = LittleFS.open(INFER_FEEDBACK_CSV_PATH, "a");
+  if (!f)
+    return;
+
+  if (line && strlen(line))
+    f.println(line);
+  f.close();
 }
 
 void Storage::loop()

@@ -2,6 +2,8 @@ from pathlib import Path
 import io
 import gzip
 import hashlib
+import json
+import re
 
 def gzip_deterministic(data: bytes) -> bytes:
   buf = io.BytesIO()
@@ -16,6 +18,16 @@ def to_c_array(data: bytes, name: str, per_line: int = 16) -> str:
     rows.append(", ".join(f"0x{b:02x}" for b in chunk))
   body = ",\n  ".join(rows)
   return f"static const uint8_t {name}[] PROGMEM = {{\n  {body}\n}};\n"
+
+def collect_i18n_keys(paths: list[Path]) -> set[str]:
+  rx_attr = re.compile(r'data-i18n="([^"]+)"')
+  rx_call = re.compile(r'\bt\("([^"]+)"')
+  out: set[str] = set()
+  for p in paths:
+    txt = p.read_text(encoding="utf-8")
+    out.update(rx_attr.findall(txt))
+    out.update(rx_call.findall(txt))
+  return out
 
 def build(project_dir: Path) -> None:
   web_dir = project_dir / "web"
@@ -43,12 +55,23 @@ def build(project_dir: Path) -> None:
     "app.js",
   ]
   i18n_dir = web_dir / "i18n"
-  i18n_dicts = {}
+  i18n_raw = {}
+  i18n_objs = {}
   for lang in ("pt", "en", "cn"):
     p = i18n_dir / f"{lang}.json"
     if not p.exists():
       raise FileNotFoundError(f"missing i18n file: {p}")
-    i18n_dicts[lang] = p.read_text(encoding="utf-8")
+    raw = p.read_text(encoding="utf-8")
+    i18n_raw[lang] = raw
+    i18n_objs[lang] = json.loads(raw)
+
+  i18n_key_sources = [template_path] + [js_dir / name for name in js_order]
+  used_keys = collect_i18n_keys(i18n_key_sources)
+  for lang, obj in i18n_objs.items():
+    missing = sorted(k for k in used_keys if k not in obj)
+    if missing:
+      preview = ", ".join(missing[:8])
+      raise ValueError(f"missing i18n keys in {lang}.json: {preview}")
   js_parts = []
   for name in js_order:
     path = js_dir / name
@@ -60,7 +83,7 @@ def build(project_dir: Path) -> None:
   styles = styles_path.read_text(encoding="utf-8").strip()
   i18n_bootstrap = (
     "window.__STG_I18N_DICTS__ = {"
-    + ",".join([f"{k}:{v}" for k, v in i18n_dicts.items()])
+    + ",".join([f"{k}:{v}" for k, v in i18n_raw.items()])
     + "};"
   )
   scripts = i18n_bootstrap + "\n\n" + "\n\n".join(js_parts)

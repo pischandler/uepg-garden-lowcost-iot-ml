@@ -1,0 +1,7 @@
+{
+  "channel": "dev",
+  "ota_enabled": true,
+  "rollout_pct": 100,
+  "requires_manual_approval": false,
+  "telemetry_level": "verbose"
+}

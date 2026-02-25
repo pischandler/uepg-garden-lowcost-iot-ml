@@ -9,4 +9,6 @@ public:
   static void loop();
   static void requestRun();
   static String lastJson();
+  static String statusJson();
+  static String diagnosticsJson();
 };

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if git diff --cached --name-only | grep -E '(^|/)secrets\.h$' >/dev/null; then
+  echo "ERROR: committing secrets.h is blocked."
+  echo "Use include/secrets.example.h and local-only include/secrets.h."
+  exit 1
+fi
+
+python firmware/smart-tomato-garden/tools/pack_webui.py >/dev/null
+echo "pre-commit checks passed."

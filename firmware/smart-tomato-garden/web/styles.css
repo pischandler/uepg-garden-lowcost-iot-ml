@@ -33,6 +33,25 @@ body {
   display: grid;
   gap: 14px;
 }
+.modeTabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tab {
+  border: 1px solid var(--line);
+  background: #f5faf4;
+  color: #2b4132;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-weight: 650;
+}
+.tab.is-active {
+  background: #2f8f48;
+  color: #fff;
+  border-color: transparent;
+}
+.panel.is-hidden { display: none; }
 
 .hero {
   background: linear-gradient(120deg, #1f7a3d 0%, #2f8f48 52%, #be4e2a 100%);
@@ -148,6 +167,18 @@ h3 { font-size: .95rem; }
 @keyframes ping {
   0% { box-shadow: 0 0 0 0 rgba(139, 233, 165, 0.7); }
   100% { box-shadow: 0 0 0 8px rgba(139, 233, 165, 0); }
+}
+.hud {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #f5faf4;
+}
+.safeModeWrap {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
 }
 
 button,
@@ -407,6 +438,16 @@ button.is-loading::before {
 }
 .diagnosisSub { margin: 6px 0 0; color: var(--muted); }
 .diagnosisMeta { margin: 8px 0 0; font-size: .85rem; color: var(--muted); }
+.guidedAlert {
+  margin-top: 8px;
+  border: 1px solid #f0d1a0;
+  border-left: 4px solid #c08a2f;
+  border-radius: 10px;
+  background: #fff9f0;
+  color: #644013;
+  padding: 8px;
+  font-size: .83rem;
+}
 
 .subCard {
   margin-top: 10px;
@@ -606,4 +647,6 @@ pre {
     max-width: none;
     width: 100%;
   }
+  .modeTabs { justify-content: stretch; }
+  .tab { flex: 1; text-align: center; }
 }

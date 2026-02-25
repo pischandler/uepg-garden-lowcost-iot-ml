@@ -14,19 +14,62 @@
     snapshotTick: null,
     streamProfile: "auto",
     lastInferTs: 0,
+    reconnectCount: 0,
+    fpsFrameCount: 0,
+    fpsLastTs: 0,
+    fpsEstimate: 0,
+    pollTimer: null,
+    pollMs: 3500,
     hist: {
       temp: [],
       soil: [],
-      pump: []
+      pump: [],
+      ts: []
     }
   };
   const HIGH_RES_STREAM_FS = 8; // VGA+
   const MID_RES_STREAM_FS = 6; // CIF+
 
   function pushHist(arr, value, max) {
-    if (!Number.isFinite(value)) return;
     arr.push(value);
     while (arr.length > max) arr.shift();
+  }
+
+  function rangeToMs(v) {
+    if (v === "5m") return 5 * 60 * 1000;
+    if (v === "2h") return 2 * 60 * 60 * 1000;
+    return 30 * 60 * 1000;
+  }
+
+  function filteredHistory() {
+    const range = R.$("trendRange") ? R.$("trendRange").value : "30m";
+    const windowMs = rangeToMs(range);
+    const now = Date.now();
+    const out = { temp: [], soil: [], pump: [] };
+    for (let i = 0; i < state.hist.ts.length; i++) {
+      if (now - state.hist.ts[i] <= windowMs) {
+        out.temp.push(state.hist.temp[i]);
+        out.soil.push(state.hist.soil[i]);
+        out.pump.push(state.hist.pump[i]);
+      }
+    }
+    return out;
+  }
+
+  function exportTrendCsv() {
+    const h = filteredHistory();
+    if (!h.temp.length) return;
+    const rows = ["idx,temp_c,soil_pct,pump_on"];
+    for (let i = 0; i < h.temp.length; i++) {
+      rows.push([i, h.temp[i], h.soil[i], h.pump[i]].join(","));
+    }
+    const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "stg_trends.csv";
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   function sleep(ms) {
@@ -70,6 +113,13 @@
       btn.classList.remove("is-loading");
       btn.textContent = btn.dataset.idleText;
     }
+  }
+
+  function setHud() {
+    const transport = shouldUseSnapshotLoop() ? "snapshot" : "mjpeg";
+    R.$("hudTransport").textContent = "mode " + transport;
+    R.$("hudFps").textContent = "fps " + (state.fpsEstimate ? state.fpsEstimate.toFixed(1) : "-");
+    R.$("hudReconnect").textContent = "reconnect " + state.reconnectCount;
   }
 
   async function runAction(meta, fn) {
@@ -132,6 +182,7 @@
     else if (state.streamProfile === "fast") key = "stream.mode_hint_forced_fast";
     else if (shouldUseSnapshotLoop()) key = "stream.mode_hint_auto_snapshot";
     hint.textContent = t(key);
+    setHud();
   }
 
   function stopStreamLoops() {
@@ -173,15 +224,33 @@
   }
 
   async function irrigate(ms) {
+    const prevTxt = R.$("pumpState").textContent;
+    const prevCls = R.$("pumpState").className;
+    R.setBadge("pumpState", t("status.pump_on"), "ok");
     await A.jpost("/api/irrigation/start", { ms: ms });
     pushFeed("irrigacao", t("irrigation.started", { duration: F.fmtMs(ms) }));
-    await refreshAll();
+    try {
+      await refreshAll();
+    } catch (err) {
+      R.$("pumpState").textContent = prevTxt;
+      R.$("pumpState").className = prevCls;
+      throw err;
+    }
   }
 
   async function stopIrrigation() {
+    const prevTxt = R.$("pumpState").textContent;
+    const prevCls = R.$("pumpState").className;
+    R.setBadge("pumpState", t("status.pump_off"), "");
     await A.jpost("/api/irrigation/stop", {});
     pushFeed("irrigacao", t("irrigation.stopped"));
-    await refreshAll();
+    try {
+      await refreshAll();
+    } catch (err) {
+      R.$("pumpState").textContent = prevTxt;
+      R.$("pumpState").className = prevCls;
+      throw err;
+    }
   }
 
   async function refreshAll(opts) {
@@ -195,12 +264,14 @@
     R.setSystem(payload);
     const vm = I.toViewModel(payload.lastInfer);
     state.lastInferTs = Number(payload.lastInfer && payload.lastInfer.ts_ms) || state.lastInferTs;
-    pushHist(state.hist.temp, Number(payload.sensors && payload.sensors.temp_c), 60);
-    pushHist(state.hist.soil, Number(payload.sensors && payload.sensors.soil_pct), 60);
+    pushHist(state.hist.temp, Number(payload.sensors && payload.sensors.temp_c), 2200);
+    pushHist(state.hist.soil, Number(payload.sensors && payload.sensors.soil_pct), 2200);
+    pushHist(state.hist.ts, Date.now(), 2200);
     state.hist.pump.push(payload.irrigation && payload.irrigation.pump_on ? 1 : 0);
-    while (state.hist.pump.length > 60) state.hist.pump.shift();
+    while (state.hist.pump.length > 2200) state.hist.pump.shift();
     R.setInference(vm, payload.lastInfer);
-    R.setDashboard(payload, vm, state.hist);
+    R.setGuidedAlert(vm);
+    R.setDashboard(payload, vm, filteredHistory());
     R.setRaw(payload);
       R.setSyncState(t("status.updated_now"), "");
     })();
@@ -214,11 +285,38 @@
   }
 
   function bindUi() {
+    const tabs = Array.prototype.slice.call(document.querySelectorAll(".tab"));
+    const panels = Array.prototype.slice.call(document.querySelectorAll(".panel"));
+    function activateTab(name) {
+      tabs.forEach(function (b) { b.classList.toggle("is-active", b.dataset.tab === name); });
+      panels.forEach(function (p) {
+        const opts = (p.dataset.panel || "overview").split(" ");
+        p.classList.toggle("is-hidden", opts.indexOf(name) < 0);
+      });
+    }
+    tabs.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        activateTab(btn.dataset.tab || "overview");
+      });
+    });
+    activateTab("overview");
+
     const camera = R.$("view");
     camera.addEventListener("load", function () {
+      const now = performance.now();
+      state.fpsFrameCount++;
+      if (!state.fpsLastTs) state.fpsLastTs = now;
+      const dt = now - state.fpsLastTs;
+      if (dt >= 1000) {
+        state.fpsEstimate = (state.fpsFrameCount * 1000) / dt;
+        state.fpsFrameCount = 0;
+        state.fpsLastTs = now;
+        setHud();
+      }
       R.setCameraLoading(false);
     });
     camera.addEventListener("error", function () {
+      state.reconnectCount++;
       R.setCameraLoading(true, t("camera.load_fail_reconnect"));
       R.showToast(t("camera.stream_fail"), "warn");
       pushFeed("camera", t("camera.stream_fail"));
@@ -226,6 +324,7 @@
         stopStreamLoops();
         setTimeout(function () { if (state.streaming) startStreamTransport(); }, 900);
       }
+      setHud();
     });
 
     R.$("btnStream").addEventListener("click", function () {
@@ -381,6 +480,29 @@
         startStreamTransport();
       }
     });
+    R.$("safeMode").addEventListener("change", function () {
+      const on = Boolean(R.$("safeMode").checked);
+      if (on) {
+        state.pollMs = 6000;
+        state.streamProfile = "stable";
+        R.$("streamProfile").value = "stable";
+        R.showToast(t("stream.safe_mode_on"), "warn");
+      } else {
+        state.pollMs = 3500;
+        state.streamProfile = "auto";
+        R.$("streamProfile").value = "auto";
+        R.showToast(t("stream.safe_mode_off"), "ok");
+      }
+      if (state.streaming) {
+        stopStreamLoops();
+        startStreamTransport();
+      }
+      startPolling();
+    });
+    R.$("trendRange").addEventListener("change", function () {
+      refreshAll({ silent: true }).catch(function () {});
+    });
+    R.$("btnExportTrends").addEventListener("click", exportTrendCsv);
     document.addEventListener("stg:lang-changed", function () {
       R.$("langSelect").value = T.getLang();
       setStreamHint();
@@ -390,25 +512,31 @@
     });
   }
 
+  function startPolling() {
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    state.pollTimer = setInterval(function () {
+      refreshAll({ silent: true }).catch(function (err) {
+        R.setError(err);
+        pushFeed("sistema", t("sync.error", { error: err.message }));
+        R.showToast(t("sync.error_toast"), "warn");
+      });
+    }, state.pollMs);
+  }
+
   async function boot() {
     T.init();
     R.$("langSelect").value = T.getLang();
     state.streamProfile = R.$("streamProfile").value || "auto";
     bindUi();
     setStreamHint();
+    setHud();
     R.setCameraLoading(true, t("loading.camera"));
     updateStream(true);
     await refreshAll({ silent: false });
     pushFeed("sistema", t("boot.started"));
     R.showToast(t("boot.started_toast"), "ok", 1700);
 
-    setInterval(function () {
-      refreshAll({ silent: true }).catch(function (err) {
-        R.setError(err);
-        pushFeed("sistema", t("sync.error", { error: err.message }));
-        R.showToast(t("sync.error_toast"), "warn");
-      });
-    }, 3500);
+    startPolling();
   }
 
   boot().catch(function (err) {
