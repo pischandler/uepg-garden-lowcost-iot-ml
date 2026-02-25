@@ -12,4 +12,5 @@ public:
   static String drainEvents(size_t maxBytes);
 
   static void appendInferenceCsv(const char *line);
+  static void appendInferenceFeedbackCsv(const char *line);
 };

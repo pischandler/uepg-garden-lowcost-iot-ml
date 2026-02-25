@@ -1,0 +1,7 @@
+{
+  "channel": "staging",
+  "ota_enabled": true,
+  "rollout_pct": 25,
+  "requires_manual_approval": true,
+  "telemetry_level": "normal"
+}

@@ -7,6 +7,7 @@
 #include "networking.h"
 #include "sensors.h"
 #include "irrigation.h"
+#include "storage.h"
 #include "camera_index.h"
 #include "inference_client.h"
 
@@ -16,10 +17,91 @@
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <cstring>
+#include <freertos/semphr.h>
 
 static AsyncWebServer server(HTTP_PORT);
+static const char *API_VERSION = "1.2.0";
 
 static bool g_ledOk = false;
+static SemaphoreHandle_t g_camLock = nullptr;
+static uint32_t g_heapLowWatermark = 0xFFFFFFFFUL;
+static uint32_t g_psramLowWatermark = 0xFFFFFFFFUL;
+static uint32_t g_lastInferRunReqMs = 0;
+static uint32_t g_lastIrrigStartReqMs = 0;
+static const uint32_t INFER_REQ_MIN_INTERVAL_MS = 800;
+static const uint32_t IRRIG_REQ_MIN_INTERVAL_MS = 500;
+
+namespace CameraAccess
+{
+  bool lock(uint32_t timeoutMs)
+  {
+    if (!g_camLock)
+      g_camLock = xSemaphoreCreateMutex();
+    if (!g_camLock)
+      return false;
+    TickType_t ticks = pdMS_TO_TICKS(timeoutMs);
+    return xSemaphoreTake(g_camLock, ticks) == pdTRUE;
+  }
+
+  void unlock()
+  {
+    if (!g_camLock)
+      return;
+    xSemaphoreGive(g_camLock);
+  }
+
+  camera_fb_t *fbGet(uint32_t timeoutMs)
+  {
+    if (!lock(timeoutMs))
+      return nullptr;
+    camera_fb_t *fb = esp_camera_fb_get();
+    unlock();
+    return fb;
+  }
+
+  void fbReturn(camera_fb_t *fb)
+  {
+    if (!fb)
+      return;
+    if (!lock(120))
+      return;
+    esp_camera_fb_return(fb);
+    unlock();
+  }
+}
+
+static void updateWatchdogWatermarks()
+{
+  uint32_t heapNow = (uint32_t)ESP.getFreeHeap();
+  uint32_t psramNow = (uint32_t)ESP.getFreePsram();
+  if (heapNow < g_heapLowWatermark)
+    g_heapLowWatermark = heapNow;
+  if (psramNow < g_psramLowWatermark)
+    g_psramLowWatermark = psramNow;
+}
+
+static bool isAuthorized(AsyncWebServerRequest *request)
+{
+#ifdef STG_API_TOKEN
+  if (!request->hasHeader("Authorization"))
+    return false;
+  String auth = request->getHeader("Authorization")->value();
+  String expected = String("Bearer ") + String(STG_API_TOKEN);
+  return auth == expected;
+#else
+  (void)request;
+  return true;
+#endif
+}
+
+static bool isRateLimited(uint32_t &lastTs, uint32_t minIntervalMs)
+{
+  uint32_t now = millis();
+  if ((uint32_t)(now - lastTs) < minIntervalMs)
+    return true;
+  lastTs = now;
+  return false;
+}
 
 static void ledInit()
 {
@@ -154,7 +236,7 @@ public:
   {
     if (fb)
     {
-      esp_camera_fb_return(fb);
+      CameraAccess::fbReturn(fb);
       fb = nullptr;
     }
   }
@@ -194,7 +276,7 @@ public:
   {
     if (fb)
     {
-      esp_camera_fb_return(fb);
+      CameraAccess::fbReturn(fb);
       fb = nullptr;
     }
   }
@@ -209,7 +291,7 @@ public:
     {
       if (!fb)
       {
-        fb = esp_camera_fb_get();
+        fb = CameraAccess::fbGet(80);
         if (!fb)
           break;
 
@@ -250,7 +332,7 @@ public:
         continue;
       }
 
-      esp_camera_fb_return(fb);
+      CameraAccess::fbReturn(fb);
       fb = nullptr;
     }
 
@@ -299,6 +381,8 @@ static void handleJsonBody(AsyncWebServerRequest *request, uint8_t *data, size_t
 void CameraServer::begin()
 {
   ledInit();
+  if (!g_camLock)
+    g_camLock = xSemaphoreCreateMutex();
 
   auto cfg = ConfigStore::get();
   bool ok = cameraInit(cfg.cam_quality, cfg.cam_framesize);
@@ -331,6 +415,7 @@ void CameraServer::begin()
               doc["psram"] = (int)ESP.getFreePsram();
               doc["uptime_ms"] = (uint32_t)millis();
               doc["stream_clients"] = Metrics::streamClients();
+              doc["api_version"] = API_VERSION;
               String out;
               serializeJson(doc, out);
               sendJson(request, out); });
@@ -348,6 +433,7 @@ void CameraServer::begin()
               doc["infer_attempt"] = Metrics::inferAttempt();
               doc["infer_ok"] = Metrics::inferOk();
               doc["infer_fail"] = Metrics::inferFail();
+              doc["api_version"] = API_VERSION;
               String out;
               serializeJson(doc, out);
               sendJson(request, out); });
@@ -360,6 +446,7 @@ void CameraServer::begin()
               doc["quality"] = cfg.cam_quality;
               doc["framesize"] = cfg.cam_framesize;
               doc["led_intensity"] = cfg.led_duty;
+              doc["api_version"] = API_VERSION;
               String out;
               serializeJson(doc, out);
               sendJson(request, out); });
@@ -367,6 +454,11 @@ void CameraServer::begin()
   server.on("/control", HTTP_GET, [](AsyncWebServerRequest *request)
             {
               Metrics::incHttp();
+              if (!isAuthorized(request))
+              {
+                request->send(401, "text/plain", "unauthorized");
+                return;
+              }
               if (!request->hasParam("var") || !request->hasParam("val"))
               {
                 request->send(400, "text/plain", "missing var/val");
@@ -442,6 +534,7 @@ void CameraServer::begin()
               doc["temp_c"] = s.temp_c;
               doc["hum_pct"] = s.hum_pct;
               doc["dht_ok"] = s.dht_ok;
+              doc["api_version"] = API_VERSION;
               String out;
               serializeJson(doc, out);
               sendJson(request, out); });
@@ -470,6 +563,31 @@ void CameraServer::begin()
               doc["cooldown_remaining_ms"] = cooldownRemaining;
               doc["soil_dry_threshold_pct"] = cfg.soil_dry_threshold_pct;
               doc["pump_on_ms"] = cfg.pump_on_ms;
+              doc["api_version"] = API_VERSION;
+              String out;
+              serializeJson(doc, out);
+              sendJson(request, out); });
+
+  server.on("/api/watchdog", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+              Metrics::incHttp();
+              updateWatchdogWatermarks();
+              StaticJsonDocument<384> doc;
+              uint32_t heapNow = (uint32_t)ESP.getFreeHeap();
+              uint32_t heapMax = (uint32_t)ESP.getMaxAllocHeap();
+              uint32_t psramNow = (uint32_t)ESP.getFreePsram();
+              uint32_t psramMax = (uint32_t)ESP.getMaxAllocPsram();
+
+              uint32_t heapFragPct = heapNow > 0 ? (100U - (heapMax * 100U) / heapNow) : 0U;
+              uint32_t psramFragPct = psramNow > 0 ? (100U - (psramMax * 100U) / psramNow) : 0U;
+
+              doc["heap_low_watermark"] = g_heapLowWatermark;
+              doc["psram_low_watermark"] = g_psramLowWatermark;
+              doc["heap_frag_pct"] = heapFragPct;
+              doc["psram_frag_pct"] = psramFragPct;
+              doc["uptime_ms"] = (uint32_t)millis();
+              doc["api_version"] = API_VERSION;
+
               String out;
               serializeJson(doc, out);
               sendJson(request, out); });
@@ -478,6 +596,16 @@ void CameraServer::begin()
             { Metrics::incHttp(); }, nullptr, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
             { handleJsonBody(request, data, len, index, total, [](AsyncWebServerRequest *req, const String &body)
                              {
+                               if (!isAuthorized(req))
+                               {
+                                 req->send(401, "text/plain", "unauthorized");
+                                 return;
+                               }
+                               if (isRateLimited(g_lastIrrigStartReqMs, IRRIG_REQ_MIN_INTERVAL_MS))
+                               {
+                                 req->send(429, "text/plain", "rate_limited");
+                                 return;
+                               }
                                StaticJsonDocument<128> doc;
                                auto err = deserializeJson(doc, body);
                                uint32_t ms = 0;
@@ -494,6 +622,11 @@ void CameraServer::begin()
             { Metrics::incHttp(); }, nullptr, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
             { handleJsonBody(request, data, len, index, total, [](AsyncWebServerRequest *req, const String &)
                              {
+                               if (!isAuthorized(req))
+                               {
+                                 req->send(401, "text/plain", "unauthorized");
+                                 return;
+                               }
                                bool ok = Irrigation::stop();
                                StaticJsonDocument<64> out;
                                out["ok"] = ok;
@@ -511,6 +644,11 @@ void CameraServer::begin()
             { Metrics::incHttp(); }, nullptr, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
             { handleJsonBody(request, data, len, index, total, [](AsyncWebServerRequest *req, const String &body)
                              {
+                               if (!isAuthorized(req))
+                               {
+                                 req->send(401, "text/plain", "unauthorized");
+                                 return;
+                               }
                                ConfigStore::setPartialJson(body.c_str());
                                applyCameraFromConfig();
                                maybeLedForStream();
@@ -542,6 +680,11 @@ void CameraServer::begin()
             { Metrics::incHttp(); }, nullptr, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
             { handleJsonBody(request, data, len, index, total, [](AsyncWebServerRequest *req, const String &body)
                              {
+                               if (!isAuthorized(req))
+                               {
+                                 req->send(401, "text/plain", "unauthorized");
+                                 return;
+                               }
                                ConfigStore::setPartialJson(body.c_str());
                                String out = ConfigStore::toJson();
                                sendJson(req, out);
@@ -550,10 +693,21 @@ void CameraServer::begin()
   server.on("/api/inference/run", HTTP_POST, [](AsyncWebServerRequest *request)
             {
               Metrics::incHttp();
+              if (!isAuthorized(request))
+              {
+                request->send(401, "text/plain", "unauthorized");
+                return;
+              }
+              if (isRateLimited(g_lastInferRunReqMs, INFER_REQ_MIN_INTERVAL_MS))
+              {
+                request->send(429, "text/plain", "rate_limited");
+                return;
+              }
               InferenceClient::requestRun();
               StaticJsonDocument<128> doc;
               doc["ok"] = true;
               doc["queued"] = true;
+              doc["api_version"] = API_VERSION;
               String out;
               serializeJson(doc, out);
               sendJson(request, out); });
@@ -562,6 +716,67 @@ void CameraServer::begin()
             {
               Metrics::incHttp();
               sendJson(request, InferenceClient::lastJson()); });
+
+  server.on("/api/inference/status", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+              Metrics::incHttp();
+              sendJson(request, InferenceClient::statusJson()); });
+
+  server.on("/api/inference/diagnostics", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+              Metrics::incHttp();
+              sendJson(request, InferenceClient::diagnosticsJson()); });
+
+  server.on("/api/inference/feedback", HTTP_POST, [](AsyncWebServerRequest *request)
+            { Metrics::incHttp(); }, nullptr, [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total)
+            { handleJsonBody(request, data, len, index, total, [](AsyncWebServerRequest *req, const String &body)
+                             {
+                               if (!isAuthorized(req))
+                               {
+                                 req->send(401, "text/plain", "unauthorized");
+                                 return;
+                               }
+
+                               StaticJsonDocument<384> doc;
+                               auto err = deserializeJson(doc, body);
+                               if (err)
+                               {
+                                 req->send(400, "text/plain", "bad_json");
+                                 return;
+                               }
+
+                               auto esc = [](String s)
+                               {
+                                 s.replace("\"", "\"\"");
+                                 return String("\"") + s + String("\"");
+                               };
+
+                               String predicted = doc["predicted"] | "";
+                               String corrected = doc["corrected"] | "";
+                               String labeler = doc["labeler"] | "";
+                               String notes = doc["notes"] | "";
+
+                               String line;
+                               line.reserve(256);
+                               line += String((uint32_t)millis());
+                               line += ",";
+                               line += esc(Networking::deviceId());
+                               line += ",";
+                               line += esc(predicted);
+                               line += ",";
+                               line += esc(corrected);
+                               line += ",";
+                               line += esc(labeler);
+                               line += ",";
+                               line += esc(notes);
+                               Storage::appendInferenceFeedbackCsv(line.c_str());
+
+                               StaticJsonDocument<96> out;
+                               out["ok"] = true;
+                               out["api_version"] = API_VERSION;
+                               String js;
+                               serializeJson(out, js);
+                               sendJson(req, js); }); });
 
   server.on("/api/inference/log", HTTP_GET, [](AsyncWebServerRequest *request)
             {
@@ -592,14 +807,14 @@ void CameraServer::begin()
                 delay(LED_FLASH_ON_DELAY_MS);
               }
 
-              camera_fb_t *fb = esp_camera_fb_get();
+              camera_fb_t *fb = CameraAccess::fbGet(120);
 
               // recovery: se falhou, tenta reinit e pega de novo
               if (!fb && Metrics::streamClients() == 0)
               {
                 cameraRecover();
                 delay(40);
-                fb = esp_camera_fb_get();
+                fb = CameraAccess::fbGet(120);
               }
 
               if (!keepLed) maybeLedForStream();

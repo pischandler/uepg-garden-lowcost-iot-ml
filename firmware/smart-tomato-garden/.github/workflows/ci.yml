@@ -1,0 +1,49 @@
+name: firmware-ci
+
+on:
+  push:
+    paths:
+      - "firmware/smart-tomato-garden/**"
+  pull_request:
+    paths:
+      - "firmware/smart-tomato-garden/**"
+
+jobs:
+  build-and-check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/smart-tomato-garden
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Web Bundle Check
+        run: python tools/pack_webui.py
+
+      - name: Firmware Build
+        run: pio run -e esp32-s3-devkitc-1
+
+      - name: Size Budget Check
+        run: python tools/size_budget_check.py
+
+      - name: Export camera_index hash
+        run: python tools/export_artifact_meta.py
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-artifacts
+          path: |
+            firmware/smart-tomato-garden/.pio/build/esp32-s3-devkitc-1/firmware.bin
+            firmware/smart-tomato-garden/.pio/build/esp32-s3-devkitc-1/firmware.elf
+            firmware/smart-tomato-garden/.pio/build/esp32-s3-devkitc-1/firmware.map
+            firmware/smart-tomato-garden/include/camera_index.h
+            firmware/smart-tomato-garden/artifacts_meta.json

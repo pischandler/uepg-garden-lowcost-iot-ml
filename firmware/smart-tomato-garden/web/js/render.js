@@ -29,7 +29,8 @@
     const h = cvs.height;
     ctx.clearRect(0, 0, w, h);
 
-    if (!values || values.length < 2) {
+    const clean = (values || []).map(function (v) { return Number(v); }).filter(function (n) { return Number.isFinite(n); });
+    if (clean.length < 2) {
       ctx.strokeStyle = "rgba(90,120,100,.45)";
       ctx.beginPath();
       ctx.moveTo(0, h * .6);
@@ -38,16 +39,16 @@
       return;
     }
 
-    let min = Math.min.apply(null, values);
-    let max = Math.max.apply(null, values);
+    let min = Math.min.apply(null, clean);
+    let max = Math.max.apply(null, clean);
     if (max - min < 0.0001) max = min + 1;
 
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    for (let i = 0; i < values.length; i++) {
-      const x = (i / (values.length - 1)) * (w - 1);
-      const norm = (values[i] - min) / (max - min);
+    for (let i = 0; i < clean.length; i++) {
+      const x = (i / (clean.length - 1)) * (w - 1);
+      const norm = (clean[i] - min) / (max - min);
       const y = h - 12 - norm * (h - 24);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
@@ -210,6 +211,25 @@
     $("rawJson").textContent = JSON.stringify(payload, null, 2);
   }
 
+  function setGuidedAlert(vm) {
+    const t = window.STGI18n.t;
+    const box = $("guidedAlert");
+    if (!box) return;
+    box.classList.add("hidden");
+
+    if (!vm) return;
+    if (vm.status === "fail") {
+      box.textContent = t("guided.infer_fail");
+      box.classList.remove("hidden");
+      return;
+    }
+    if (vm.status === "low_confidence" && vm.reasons && vm.reasons.length) {
+      box.textContent = t("guided.low_conf", { reasons: vm.reasons.join(", ") });
+      box.classList.remove("hidden");
+      return;
+    }
+  }
+
   function setDashboard(payload, vm, hist) {
     const F = window.STGFmt;
     const t = window.STGI18n.t;
@@ -232,16 +252,18 @@
 
     drawSparkline("trendTemp", hist.temp, "#4eaa68");
     drawSparkline("trendSoil", hist.soil, "#2f8f48");
-    if (hist.temp.length) {
-      const tMin = Math.min.apply(null, hist.temp);
-      const tMax = Math.max.apply(null, hist.temp);
+    const cleanTemp = (hist.temp || []).map(function (n) { return Number(n); }).filter(function (n) { return Number.isFinite(n); });
+    const cleanSoil = (hist.soil || []).map(function (n) { return Number(n); }).filter(function (n) { return Number.isFinite(n); });
+    if (cleanTemp.length) {
+      const tMin = Math.min.apply(null, cleanTemp);
+      const tMax = Math.max.apply(null, cleanTemp);
       $("trendTempMeta").textContent = F.fmtNum(tMin, 1) + " - " + F.fmtNum(tMax, 1) + " " + t("unit.celsius");
     } else {
       $("trendTempMeta").textContent = "-";
     }
-    if (hist.soil.length) {
-      const sMin = Math.min.apply(null, hist.soil);
-      const sMax = Math.max.apply(null, hist.soil);
+    if (cleanSoil.length) {
+      const sMin = Math.min.apply(null, cleanSoil);
+      const sMax = Math.max.apply(null, cleanSoil);
       $("trendSoilMeta").textContent = F.fmtNum(sMin, 1) + "% - " + F.fmtNum(sMax, 1) + "%";
     } else {
       $("trendSoilMeta").textContent = "-";
@@ -296,6 +318,7 @@
     setRaw,
     setError
     ,
-    setDashboard
+    setDashboard,
+    setGuidedAlert
   };
 })();

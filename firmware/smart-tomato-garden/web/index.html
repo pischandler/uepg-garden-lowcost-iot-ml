@@ -40,6 +40,25 @@ body {
   display: grid;
   gap: 14px;
 }
+.modeTabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tab {
+  border: 1px solid var(--line);
+  background: #f5faf4;
+  color: #2b4132;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-weight: 650;
+}
+.tab.is-active {
+  background: #2f8f48;
+  color: #fff;
+  border-color: transparent;
+}
+.panel.is-hidden { display: none; }
 
 .hero {
   background: linear-gradient(120deg, #1f7a3d 0%, #2f8f48 52%, #be4e2a 100%);
@@ -155,6 +174,18 @@ h3 { font-size: .95rem; }
 @keyframes ping {
   0% { box-shadow: 0 0 0 0 rgba(139, 233, 165, 0.7); }
   100% { box-shadow: 0 0 0 8px rgba(139, 233, 165, 0); }
+}
+.hud {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #f5faf4;
+}
+.safeModeWrap {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
 }
 
 button,
@@ -414,6 +445,16 @@ button.is-loading::before {
 }
 .diagnosisSub { margin: 6px 0 0; color: var(--muted); }
 .diagnosisMeta { margin: 8px 0 0; font-size: .85rem; color: var(--muted); }
+.guidedAlert {
+  margin-top: 8px;
+  border: 1px solid #f0d1a0;
+  border-left: 4px solid #c08a2f;
+  border-radius: 10px;
+  background: #fff9f0;
+  color: #644013;
+  padding: 8px;
+  font-size: .83rem;
+}
 
 .subCard {
   margin-top: 10px;
@@ -613,11 +654,20 @@ pre {
     max-width: none;
     width: 100%;
   }
+  .modeTabs { justify-content: stretch; }
+  .tab { flex: 1; text-align: center; }
 }
   </style>
 </head>
 <body>
   <main class="shell">
+    <nav class="modeTabs" aria-label="Modo do painel">
+      <button class="tab is-active" data-tab="overview" data-i18n="tab.overview">Visao geral</button>
+      <button class="tab" data-tab="camera" data-i18n="tab.camera">Camera</button>
+      <button class="tab" data-tab="irrigation" data-i18n="tab.irrigation">Irrigacao</button>
+      <button class="tab" data-tab="technical" data-i18n="tab.technical">Tecnico</button>
+    </nav>
+
     <section class="hero">
       <div class="heroTop">
         <div>
@@ -631,8 +681,8 @@ pre {
             <option value="en" data-i18n="lang.en">EN</option>
             <option value="cn" data-i18n="lang.cn">中文</option>
           </select>
-          <span class="tiny syncState" id="syncState" data-i18n="status.syncing">Sincronizando...</span>
-          <span class="status" id="onlineState" data-i18n="status.connecting">Conectando...</span>
+          <span class="tiny syncState" id="syncState" data-i18n="status.syncing" aria-live="polite">Sincronizando...</span>
+          <span class="status" id="onlineState" data-i18n="status.connecting" aria-live="polite">Conectando...</span>
           <button id="btnRefresh" class="ghost" data-i18n="action.refresh_all">Atualizar tudo</button>
         </div>
       </div>
@@ -644,7 +694,7 @@ pre {
       </div>
     </section>
 
-    <section class="dashboardGrid">
+    <section class="dashboardGrid panel" data-panel="overview">
       <article class="card">
         <div class="head">
           <h2 data-i18n="dashboard.realtime">Painel em tempo real</h2>
@@ -672,7 +722,15 @@ pre {
       <article class="card">
         <div class="head">
           <h2 data-i18n="dashboard.trends">Tendencias</h2>
-          <span class="tiny" data-i18n="dashboard.last_cycles">ultimos ciclos</span>
+          <div class="row">
+            <label for="trendRange" class="tiny" data-i18n="dashboard.range">janela</label>
+            <select id="trendRange">
+              <option value="5m">5m</option>
+              <option value="30m" selected>30m</option>
+              <option value="2h">2h</option>
+            </select>
+            <button id="btnExportTrends" class="ghost" data-i18n="dashboard.export_csv">Exportar CSV</button>
+          </div>
         </div>
         <div class="trendBlock">
           <div class="trendHead">
@@ -723,11 +781,14 @@ pre {
       </article>
     </section>
 
-    <section class="cameraHero card">
+    <section class="cameraHero card panel" data-panel="overview camera">
       <div class="head">
         <h2 data-i18n="section.camera_live">Camera ao vivo</h2>
         <div class="row">
           <span class="status" id="streamState" data-i18n="status.stream_active">Stream ativo</span>
+          <span class="tiny hud" id="hudTransport">mode -</span>
+          <span class="tiny hud" id="hudFps">fps -</span>
+          <span class="tiny hud" id="hudReconnect">reconnect 0</span>
           <label for="streamProfile" class="tiny" data-i18n="label.stream_profile">Perfil</label>
           <select id="streamProfile">
             <option value="auto" data-i18n="stream.profile_auto">Auto</option>
@@ -739,6 +800,10 @@ pre {
         </div>
       </div>
       <div class="tiny" id="streamHint" data-i18n="stream.mode_hint_auto_mjpeg">Auto: modo rapido</div>
+      <label class="tiny safeModeWrap" for="safeMode">
+        <input id="safeMode" type="checkbox">
+        <span data-i18n="stream.safe_mode">Modo seguro de stream</span>
+      </label>
       <div class="mediaWrap">
         <img id="view" class="cameraFrame" src="/stream" alt="camera stream">
         <div class="mediaOverlay loading" id="cameraOverlay">
@@ -777,7 +842,7 @@ pre {
           <div class="head">
             <h2 data-i18n="section.current_diagnosis">Diagnostico Atual</h2>
             <div class="row">
-              <span class="status" id="diagnosisStatus" data-i18n="status.loading">Carregando...</span>
+              <span class="status" id="diagnosisStatus" data-i18n="status.loading" aria-live="polite">Carregando...</span>
               <button id="btnRunInference" class="brand" data-i18n="action.run_inference">Rodar inferencia</button>
             </div>
           </div>
@@ -786,6 +851,7 @@ pre {
             <p class="diagnosisSub" id="diagSub" data-i18n="diagnosis.waiting_data">Aguardando dados</p>
             <p class="diagnosisMeta" id="diagMeta">latencia - | HTTP - | horario -</p>
           </div>
+          <div id="guidedAlert" class="guidedAlert hidden" aria-live="polite"></div>
           <div class="row">
             <button id="btnRetrySync" class="warn hidden" data-i18n="action.retry">Tentar novamente</button>
           </div>
@@ -807,8 +873,8 @@ pre {
       </section>
     </section>
 
-    <section class="opsGrid">
-      <article class="card">
+    <section class="opsGrid panel" data-panel="overview irrigation">
+      <article class="card" data-panel-card="sensors">
         <div class="head">
           <h2 data-i18n="section.sensors">Sensores do ambiente</h2>
           <span class="status" id="sensorFresh" data-i18n="status.reading">Lendo...</span>
@@ -823,7 +889,7 @@ pre {
         </div>
       </article>
 
-      <article class="card">
+      <article class="card" data-panel-card="irrigation">
         <div class="head">
           <h2 data-i18n="section.irrigation">Irrigacao</h2>
           <span class="status" id="pumpState" data-i18n="status.pump_off">Bomba desligada</span>
@@ -846,7 +912,7 @@ pre {
         </div>
       </article>
 
-      <article class="card">
+      <article class="card" data-panel-card="health">
         <div class="head">
           <h2 data-i18n="section.health">Saude e telemetria</h2>
           <span class="tiny" id="lastSync" data-i18n="status.no_sync">sem sincronizacao</span>
@@ -861,17 +927,17 @@ pre {
         </div>
       </article>
 
-      <article class="card">
+      <article class="card" data-panel-card="events">
         <div class="head">
           <h2 data-i18n="section.events">Eventos recentes</h2>
           <span class="tiny" data-i18n="events.last_20">ultimos 20 eventos</span>
         </div>
-        <ul class="feed" id="feed">
+        <ul class="feed" id="feed" aria-live="polite">
           <li class="emptyFeed" data-i18n="events.none">Nenhum evento ainda</li>
         </ul>
       </article>
 
-      <article class="card wide">
+      <article class="card wide panel" data-panel="technical">
         <details>
           <summary data-i18n="section.tech_mode">Modo tecnico (JSON)</summary>
           <div class="debugGrid">
@@ -1005,6 +1071,17 @@ window.__STG_I18N_DICTS__ = {pt:{
   "dashboard.pump_activity": "Atividade da bomba",
   "dashboard.recent_window": "janela recente",
   "dashboard.pump_duty": "Duty cycle",
+  "dashboard.range": "janela",
+  "dashboard.export_csv": "Exportar CSV",
+  "tab.overview": "Visao geral",
+  "tab.camera": "Camera",
+  "tab.irrigation": "Irrigacao",
+  "tab.technical": "Tecnico",
+  "stream.safe_mode": "Modo seguro de stream",
+  "stream.safe_mode_on": "Modo seguro ativado",
+  "stream.safe_mode_off": "Modo seguro desativado",
+  "guided.infer_fail": "Falha na inferencia. Revise iluminacao, foco e tente novamente em resolucao menor.",
+  "guided.low_conf": "Confianca baixa: {reasons}. Acao sugerida: estabilize imagem e rode nova inferencia.",
   "camera.load_fail_reconnect": "Falha no stream, tentando reconectar...",
   "camera.stream_fail": "Falha no stream da camera",
   "camera.photo_captured": "Foto capturada",
@@ -1176,6 +1253,17 @@ window.__STG_I18N_DICTS__ = {pt:{
   "dashboard.pump_activity": "Pump activity",
   "dashboard.recent_window": "recent window",
   "dashboard.pump_duty": "Duty cycle",
+  "dashboard.range": "range",
+  "dashboard.export_csv": "Export CSV",
+  "tab.overview": "Overview",
+  "tab.camera": "Camera",
+  "tab.irrigation": "Irrigation",
+  "tab.technical": "Technical",
+  "stream.safe_mode": "Safe stream mode",
+  "stream.safe_mode_on": "Safe mode enabled",
+  "stream.safe_mode_off": "Safe mode disabled",
+  "guided.infer_fail": "Inference failed. Check lighting/focus and retry at a lower resolution.",
+  "guided.low_conf": "Low confidence: {reasons}. Suggested action: stabilize frame and rerun inference.",
   "camera.load_fail_reconnect": "Stream failed, retrying...",
   "camera.stream_fail": "Camera stream failed",
   "camera.photo_captured": "Photo captured",
@@ -1347,6 +1435,17 @@ window.__STG_I18N_DICTS__ = {pt:{
   "dashboard.pump_activity": "水泵活动",
   "dashboard.recent_window": "最近窗口",
   "dashboard.pump_duty": "占空比",
+  "dashboard.range": "范围",
+  "dashboard.export_csv": "导出 CSV",
+  "tab.overview": "总览",
+  "tab.camera": "摄像头",
+  "tab.irrigation": "灌溉",
+  "tab.technical": "技术",
+  "stream.safe_mode": "安全视频模式",
+  "stream.safe_mode_on": "安全模式已开启",
+  "stream.safe_mode_off": "安全模式已关闭",
+  "guided.infer_fail": "推理失败。请检查光照和对焦，并在较低分辨率下重试。",
+  "guided.low_conf": "低置信度：{reasons}。建议操作：稳定画面后重新推理。",
   "camera.load_fail_reconnect": "视频流失败，正在重连...",
   "camera.stream_fail": "摄像头视频流失败",
   "camera.photo_captured": "已拍照",
@@ -1733,7 +1832,8 @@ window.__STG_I18N_DICTS__ = {pt:{
     const h = cvs.height;
     ctx.clearRect(0, 0, w, h);
 
-    if (!values || values.length < 2) {
+    const clean = (values || []).map(function (v) { return Number(v); }).filter(function (n) { return Number.isFinite(n); });
+    if (clean.length < 2) {
       ctx.strokeStyle = "rgba(90,120,100,.45)";
       ctx.beginPath();
       ctx.moveTo(0, h * .6);
@@ -1742,16 +1842,16 @@ window.__STG_I18N_DICTS__ = {pt:{
       return;
     }
 
-    let min = Math.min.apply(null, values);
-    let max = Math.max.apply(null, values);
+    let min = Math.min.apply(null, clean);
+    let max = Math.max.apply(null, clean);
     if (max - min < 0.0001) max = min + 1;
 
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    for (let i = 0; i < values.length; i++) {
-      const x = (i / (values.length - 1)) * (w - 1);
-      const norm = (values[i] - min) / (max - min);
+    for (let i = 0; i < clean.length; i++) {
+      const x = (i / (clean.length - 1)) * (w - 1);
+      const norm = (clean[i] - min) / (max - min);
       const y = h - 12 - norm * (h - 24);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
@@ -1914,6 +2014,25 @@ window.__STG_I18N_DICTS__ = {pt:{
     $("rawJson").textContent = JSON.stringify(payload, null, 2);
   }
 
+  function setGuidedAlert(vm) {
+    const t = window.STGI18n.t;
+    const box = $("guidedAlert");
+    if (!box) return;
+    box.classList.add("hidden");
+
+    if (!vm) return;
+    if (vm.status === "fail") {
+      box.textContent = t("guided.infer_fail");
+      box.classList.remove("hidden");
+      return;
+    }
+    if (vm.status === "low_confidence" && vm.reasons && vm.reasons.length) {
+      box.textContent = t("guided.low_conf", { reasons: vm.reasons.join(", ") });
+      box.classList.remove("hidden");
+      return;
+    }
+  }
+
   function setDashboard(payload, vm, hist) {
     const F = window.STGFmt;
     const t = window.STGI18n.t;
@@ -1936,16 +2055,18 @@ window.__STG_I18N_DICTS__ = {pt:{
 
     drawSparkline("trendTemp", hist.temp, "#4eaa68");
     drawSparkline("trendSoil", hist.soil, "#2f8f48");
-    if (hist.temp.length) {
-      const tMin = Math.min.apply(null, hist.temp);
-      const tMax = Math.max.apply(null, hist.temp);
+    const cleanTemp = (hist.temp || []).map(function (n) { return Number(n); }).filter(function (n) { return Number.isFinite(n); });
+    const cleanSoil = (hist.soil || []).map(function (n) { return Number(n); }).filter(function (n) { return Number.isFinite(n); });
+    if (cleanTemp.length) {
+      const tMin = Math.min.apply(null, cleanTemp);
+      const tMax = Math.max.apply(null, cleanTemp);
       $("trendTempMeta").textContent = F.fmtNum(tMin, 1) + " - " + F.fmtNum(tMax, 1) + " " + t("unit.celsius");
     } else {
       $("trendTempMeta").textContent = "-";
     }
-    if (hist.soil.length) {
-      const sMin = Math.min.apply(null, hist.soil);
-      const sMax = Math.max.apply(null, hist.soil);
+    if (cleanSoil.length) {
+      const sMin = Math.min.apply(null, cleanSoil);
+      const sMax = Math.max.apply(null, cleanSoil);
       $("trendSoilMeta").textContent = F.fmtNum(sMin, 1) + "% - " + F.fmtNum(sMax, 1) + "%";
     } else {
       $("trendSoilMeta").textContent = "-";
@@ -2000,7 +2121,8 @@ window.__STG_I18N_DICTS__ = {pt:{
     setRaw,
     setError
     ,
-    setDashboard
+    setDashboard,
+    setGuidedAlert
   };
 })();
 
@@ -2020,19 +2142,62 @@ window.__STG_I18N_DICTS__ = {pt:{
     snapshotTick: null,
     streamProfile: "auto",
     lastInferTs: 0,
+    reconnectCount: 0,
+    fpsFrameCount: 0,
+    fpsLastTs: 0,
+    fpsEstimate: 0,
+    pollTimer: null,
+    pollMs: 3500,
     hist: {
       temp: [],
       soil: [],
-      pump: []
+      pump: [],
+      ts: []
     }
   };
   const HIGH_RES_STREAM_FS = 8; // VGA+
   const MID_RES_STREAM_FS = 6; // CIF+
 
   function pushHist(arr, value, max) {
-    if (!Number.isFinite(value)) return;
     arr.push(value);
     while (arr.length > max) arr.shift();
+  }
+
+  function rangeToMs(v) {
+    if (v === "5m") return 5 * 60 * 1000;
+    if (v === "2h") return 2 * 60 * 60 * 1000;
+    return 30 * 60 * 1000;
+  }
+
+  function filteredHistory() {
+    const range = R.$("trendRange") ? R.$("trendRange").value : "30m";
+    const windowMs = rangeToMs(range);
+    const now = Date.now();
+    const out = { temp: [], soil: [], pump: [] };
+    for (let i = 0; i < state.hist.ts.length; i++) {
+      if (now - state.hist.ts[i] <= windowMs) {
+        out.temp.push(state.hist.temp[i]);
+        out.soil.push(state.hist.soil[i]);
+        out.pump.push(state.hist.pump[i]);
+      }
+    }
+    return out;
+  }
+
+  function exportTrendCsv() {
+    const h = filteredHistory();
+    if (!h.temp.length) return;
+    const rows = ["idx,temp_c,soil_pct,pump_on"];
+    for (let i = 0; i < h.temp.length; i++) {
+      rows.push([i, h.temp[i], h.soil[i], h.pump[i]].join(","));
+    }
+    const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "stg_trends.csv";
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   function sleep(ms) {
@@ -2076,6 +2241,13 @@ window.__STG_I18N_DICTS__ = {pt:{
       btn.classList.remove("is-loading");
       btn.textContent = btn.dataset.idleText;
     }
+  }
+
+  function setHud() {
+    const transport = shouldUseSnapshotLoop() ? "snapshot" : "mjpeg";
+    R.$("hudTransport").textContent = "mode " + transport;
+    R.$("hudFps").textContent = "fps " + (state.fpsEstimate ? state.fpsEstimate.toFixed(1) : "-");
+    R.$("hudReconnect").textContent = "reconnect " + state.reconnectCount;
   }
 
   async function runAction(meta, fn) {
@@ -2138,6 +2310,7 @@ window.__STG_I18N_DICTS__ = {pt:{
     else if (state.streamProfile === "fast") key = "stream.mode_hint_forced_fast";
     else if (shouldUseSnapshotLoop()) key = "stream.mode_hint_auto_snapshot";
     hint.textContent = t(key);
+    setHud();
   }
 
   function stopStreamLoops() {
@@ -2179,15 +2352,33 @@ window.__STG_I18N_DICTS__ = {pt:{
   }
 
   async function irrigate(ms) {
+    const prevTxt = R.$("pumpState").textContent;
+    const prevCls = R.$("pumpState").className;
+    R.setBadge("pumpState", t("status.pump_on"), "ok");
     await A.jpost("/api/irrigation/start", { ms: ms });
     pushFeed("irrigacao", t("irrigation.started", { duration: F.fmtMs(ms) }));
-    await refreshAll();
+    try {
+      await refreshAll();
+    } catch (err) {
+      R.$("pumpState").textContent = prevTxt;
+      R.$("pumpState").className = prevCls;
+      throw err;
+    }
   }
 
   async function stopIrrigation() {
+    const prevTxt = R.$("pumpState").textContent;
+    const prevCls = R.$("pumpState").className;
+    R.setBadge("pumpState", t("status.pump_off"), "");
     await A.jpost("/api/irrigation/stop", {});
     pushFeed("irrigacao", t("irrigation.stopped"));
-    await refreshAll();
+    try {
+      await refreshAll();
+    } catch (err) {
+      R.$("pumpState").textContent = prevTxt;
+      R.$("pumpState").className = prevCls;
+      throw err;
+    }
   }
 
   async function refreshAll(opts) {
@@ -2201,12 +2392,14 @@ window.__STG_I18N_DICTS__ = {pt:{
     R.setSystem(payload);
     const vm = I.toViewModel(payload.lastInfer);
     state.lastInferTs = Number(payload.lastInfer && payload.lastInfer.ts_ms) || state.lastInferTs;
-    pushHist(state.hist.temp, Number(payload.sensors && payload.sensors.temp_c), 60);
-    pushHist(state.hist.soil, Number(payload.sensors && payload.sensors.soil_pct), 60);
+    pushHist(state.hist.temp, Number(payload.sensors && payload.sensors.temp_c), 2200);
+    pushHist(state.hist.soil, Number(payload.sensors && payload.sensors.soil_pct), 2200);
+    pushHist(state.hist.ts, Date.now(), 2200);
     state.hist.pump.push(payload.irrigation && payload.irrigation.pump_on ? 1 : 0);
-    while (state.hist.pump.length > 60) state.hist.pump.shift();
+    while (state.hist.pump.length > 2200) state.hist.pump.shift();
     R.setInference(vm, payload.lastInfer);
-    R.setDashboard(payload, vm, state.hist);
+    R.setGuidedAlert(vm);
+    R.setDashboard(payload, vm, filteredHistory());
     R.setRaw(payload);
       R.setSyncState(t("status.updated_now"), "");
     })();
@@ -2220,11 +2413,38 @@ window.__STG_I18N_DICTS__ = {pt:{
   }
 
   function bindUi() {
+    const tabs = Array.prototype.slice.call(document.querySelectorAll(".tab"));
+    const panels = Array.prototype.slice.call(document.querySelectorAll(".panel"));
+    function activateTab(name) {
+      tabs.forEach(function (b) { b.classList.toggle("is-active", b.dataset.tab === name); });
+      panels.forEach(function (p) {
+        const opts = (p.dataset.panel || "overview").split(" ");
+        p.classList.toggle("is-hidden", opts.indexOf(name) < 0);
+      });
+    }
+    tabs.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        activateTab(btn.dataset.tab || "overview");
+      });
+    });
+    activateTab("overview");
+
     const camera = R.$("view");
     camera.addEventListener("load", function () {
+      const now = performance.now();
+      state.fpsFrameCount++;
+      if (!state.fpsLastTs) state.fpsLastTs = now;
+      const dt = now - state.fpsLastTs;
+      if (dt >= 1000) {
+        state.fpsEstimate = (state.fpsFrameCount * 1000) / dt;
+        state.fpsFrameCount = 0;
+        state.fpsLastTs = now;
+        setHud();
+      }
       R.setCameraLoading(false);
     });
     camera.addEventListener("error", function () {
+      state.reconnectCount++;
       R.setCameraLoading(true, t("camera.load_fail_reconnect"));
       R.showToast(t("camera.stream_fail"), "warn");
       pushFeed("camera", t("camera.stream_fail"));
@@ -2232,6 +2452,7 @@ window.__STG_I18N_DICTS__ = {pt:{
         stopStreamLoops();
         setTimeout(function () { if (state.streaming) startStreamTransport(); }, 900);
       }
+      setHud();
     });
 
     R.$("btnStream").addEventListener("click", function () {
@@ -2387,6 +2608,29 @@ window.__STG_I18N_DICTS__ = {pt:{
         startStreamTransport();
       }
     });
+    R.$("safeMode").addEventListener("change", function () {
+      const on = Boolean(R.$("safeMode").checked);
+      if (on) {
+        state.pollMs = 6000;
+        state.streamProfile = "stable";
+        R.$("streamProfile").value = "stable";
+        R.showToast(t("stream.safe_mode_on"), "warn");
+      } else {
+        state.pollMs = 3500;
+        state.streamProfile = "auto";
+        R.$("streamProfile").value = "auto";
+        R.showToast(t("stream.safe_mode_off"), "ok");
+      }
+      if (state.streaming) {
+        stopStreamLoops();
+        startStreamTransport();
+      }
+      startPolling();
+    });
+    R.$("trendRange").addEventListener("change", function () {
+      refreshAll({ silent: true }).catch(function () {});
+    });
+    R.$("btnExportTrends").addEventListener("click", exportTrendCsv);
     document.addEventListener("stg:lang-changed", function () {
       R.$("langSelect").value = T.getLang();
       setStreamHint();
@@ -2396,25 +2640,31 @@ window.__STG_I18N_DICTS__ = {pt:{
     });
   }
 
+  function startPolling() {
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    state.pollTimer = setInterval(function () {
+      refreshAll({ silent: true }).catch(function (err) {
+        R.setError(err);
+        pushFeed("sistema", t("sync.error", { error: err.message }));
+        R.showToast(t("sync.error_toast"), "warn");
+      });
+    }, state.pollMs);
+  }
+
   async function boot() {
     T.init();
     R.$("langSelect").value = T.getLang();
     state.streamProfile = R.$("streamProfile").value || "auto";
     bindUi();
     setStreamHint();
+    setHud();
     R.setCameraLoading(true, t("loading.camera"));
     updateStream(true);
     await refreshAll({ silent: false });
     pushFeed("sistema", t("boot.started"));
     R.showToast(t("boot.started_toast"), "ok", 1700);
 
-    setInterval(function () {
-      refreshAll({ silent: true }).catch(function (err) {
-        R.setError(err);
-        pushFeed("sistema", t("sync.error", { error: err.message }));
-        R.showToast(t("sync.error_toast"), "warn");
-      });
-    }, 3500);
+    startPolling();
   }
 
   boot().catch(function (err) {

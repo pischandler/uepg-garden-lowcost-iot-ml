@@ -1,0 +1,23 @@
+name: hil-nightly-smoke
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, smart-tomato-hil]
+    defaults:
+      run:
+        working-directory: firmware/smart-tomato-garden
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install requests
+      - name: HIL smoke checks
+        run: python tools/hil_smoke.py

@@ -47,6 +47,20 @@ firmware/smart-tomato-garden/**
 !firmware/smart-tomato-garden/web/js/*.js
 !firmware/smart-tomato-garden/web/i18n/
 !firmware/smart-tomato-garden/web/i18n/*.json
+!firmware/smart-tomato-garden/.github/
+!firmware/smart-tomato-garden/.github/workflows/
+!firmware/smart-tomato-garden/.github/workflows/*.yml
+!firmware/smart-tomato-garden/.github/ISSUE_TEMPLATE/
+!firmware/smart-tomato-garden/.github/ISSUE_TEMPLATE/*.md
+!firmware/smart-tomato-garden/docs/
+!firmware/smart-tomato-garden/docs/**
+!firmware/smart-tomato-garden/tools/
+!firmware/smart-tomato-garden/tools/*.py
+!firmware/smart-tomato-garden/.githooks/
+!firmware/smart-tomato-garden/.githooks/*
+!firmware/smart-tomato-garden/config/
+!firmware/smart-tomato-garden/config/release/
+!firmware/smart-tomato-garden/config/release/*.json
 
 
 
