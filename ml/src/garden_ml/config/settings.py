@@ -19,12 +19,30 @@ class Settings(BaseSettings):
     max_content_length: int = Field(default=8 * 1024 * 1024)
     topk: int = Field(default=3)
 
-    artifacts_dir: Path = Field(default=Path("artifacts") / "model_registry" / "v0003")
+    min_input_side_px: int = Field(default=64)
+
+    # thresholds de confiança/qualidade (server-side)
+    min_confidence: float = Field(default=0.60)
+    min_mask_coverage: float = Field(default=0.08)
+
+    # novos gates de qualidade (baseados na imagem segmentada)
+    # 0 = desativado
+    min_mean_v: float = Field(default=0.0)           # brilho médio no canal V (HSV) na máscara
+    min_laplacian_var: float = Field(default=0.0)    # nitidez (variância do laplaciano)
+
+    artifacts_dir: Path = Field(default=Path("artifacts") / "model_registry" / "v0004")
     reports_dir: Path = Field(default=Path("reports"))
 
     mlflow_enabled: bool = Field(default=True)
     mlflow_tracking_uri: str = Field(default="file:./mlruns")
     mlflow_experiment: str = Field(default="smart-tomato-garden")
+
+    # treino: controle do paralelismo do GridSearch (evita OOM em container)
+    grid_n_jobs: int = Field(default=1)
+    grid_pre_dispatch: str = Field(default="1*n_jobs")
+
+    # opcional: dump grande (não é necessário pro pipeline funcionar)
+    dump_features_csv: bool = Field(default=False)
 
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=5000)

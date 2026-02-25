@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import hashlib
 import json
 import os
@@ -211,7 +212,7 @@ def _md5_file(p: Path) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset_dir", type=str, default="dataset_aug")
-    ap.add_argument("--output_dir", type=str, default="artifacts/model_registry/v0003")
+    ap.add_argument("--output_dir", type=str, default="artifacts/model_registry/v0004")
     ap.add_argument("--img_size", type=int, default=128)
     ap.add_argument("--test_size", type=float, default=0.30)
     ap.add_argument("--seed", type=int, default=42)
@@ -234,6 +235,9 @@ def main() -> int:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    manifest_path = dataset_dir / str(args.manifest)
+    from_manifest = manifest_path.is_file()
+
     logger.info(
         "train_start dataset_dir={} output_dir={} img_size={} test_size={} seed={} cv_folds={} manifest={} photometric_normalize={} mlflow_enabled={}",
         str(dataset_dir),
@@ -253,24 +257,68 @@ def main() -> int:
     except Exception as e:
         logger.warning("manifest_load_failed {}", str(e))
         raw = scan_folder_dataset(dataset_dir)
-        samples = [(str(p), c, g, "orig") for p, c, g in raw]
+        samples = [(p, c, g, "orig") for p, c, g in raw]
         logger.info("scanned_folders n={}", len(samples))
 
     if not samples:
         raise SystemExit("no samples found")
 
-    all_kind_counts = _kind_counts([(str(p), str(c), str(g), str(k)) for p, c, g, k in samples])
-    if all_kind_counts.get("aug", 0) == 0:
-        logger.warning("no_aug_samples_detected kind_counts={}", str(all_kind_counts))
+    all_kind_counts = {"orig": 0, "aug": 0}
+    for _p, _c, _g, k in samples:
+        if k in all_kind_counts:
+            all_kind_counts[k] += 1
+    all_kind_counts = dict(sorted(all_kind_counts.items(), key=lambda x: x[0]))
+
+    if from_manifest and int(all_kind_counts.get("aug", 0)) == 0:
+        raise SystemExit("manifest exists but no aug samples were found")
+
+    orig_md5_by_path: dict[str, str] = {}
+    md5_to_classes: dict[str, set[str]] = {}
+    md5_to_gids: dict[str, set[str]] = {}
+
+    first_gid_by_key: dict[tuple[str, str], str] = {}
+    gid_remap: dict[str, str] = {}
+
+    orig_only = [(p, cls, gid, kind) for (p, cls, gid, kind) in samples if str(kind) == "orig"]
+    for p, cls, gid, _kind in tqdm(orig_only, desc="hash_orig", unit="img", mininterval=1.0):
+        hp = _md5_file(Path(p))
+        orig_md5_by_path[str(p)] = hp
+        md5_to_classes.setdefault(hp, set()).add(str(cls))
+        md5_to_gids.setdefault(hp, set()).add(str(gid))
+
+        key = (str(cls), hp)
+        if key in first_gid_by_key:
+            tgt = first_gid_by_key[key]
+            if str(gid) != tgt:
+                gid_remap[str(gid)] = tgt
+        else:
+            first_gid_by_key[key] = str(gid)
+
+    bad_md5 = sorted([h for h, cs in md5_to_classes.items() if len(cs) > 1])
+    bad_gids: set[str] = set()
+    for h in bad_md5:
+        bad_gids.update(md5_to_gids.get(h, set()))
+
+    if bad_gids:
+        samples = [(p, cls, gid, kind) for (p, cls, gid, kind) in samples if str(gid) not in bad_gids]
+
+    if gid_remap:
+        samples = [(p, cls, gid_remap.get(str(gid), str(gid)), kind) for (p, cls, gid, kind) in samples]
+
+    integrity = {
+        "cross_class_duplicate_hashes": int(len(bad_md5)),
+        "cross_class_duplicate_groups_removed": int(len(bad_gids)),
+        "dedup_gid_remap_count": int(len(gid_remap)),
+    }
+    (out_dir / "dataset_integrity.json").write_text(json.dumps(integrity, ensure_ascii=False, indent=2), encoding="utf-8")
 
     groups: dict[str, dict[str, Any]] = {}
     for path, cls, gid, kind in samples:
-        groups.setdefault(gid, {"class": cls, "items": []})
-        groups[gid]["items"].append((path, kind))
+        groups.setdefault(str(gid), {"class": str(cls), "items": []})
+        groups[str(gid)]["items"].append((str(path), str(kind)))
 
     group_ids = list(groups.keys())
     group_labels = [groups[g]["class"] for g in group_ids]
-
     split = stratified_group_split(group_ids, group_labels, test_size=float(args.test_size), seed=int(args.seed))
 
     overlap_groups = split.train_groups.intersection(split.test_groups)
@@ -286,9 +334,53 @@ def main() -> int:
     train_items, test_items, train_g, test_g = expand_groups(
         expanded_samples, split.train_groups, split.test_groups, test_kinds_only={"orig"}
     )
-
     if not train_items or not test_items:
         raise SystemExit("invalid split (empty train or test)")
+
+    train_manifest_rows: list[tuple[str, str, str, str]] = []
+    for (p, c), gid in zip(train_items, train_g):
+        train_manifest_rows.append((str(p), str(c), str(gid), _infer_kind_from_path(str(p))))
+    train_kind_counts = _kind_counts(train_manifest_rows)
+
+    if from_manifest and int(all_kind_counts.get("aug", 0)) > 0 and int(train_kind_counts.get("aug", 0)) == 0:
+        raise SystemExit("aug samples exist in dataset, but none were assigned to training set")
+
+    train_orig_hash: set[str] = set()
+    for (p, _c), _gid in zip(train_items, train_g):
+        if _infer_kind_from_path(str(p)) == "orig":
+            h = orig_md5_by_path.get(str(p))
+            if h is None:
+                h = _md5_file(Path(p))
+                orig_md5_by_path[str(p)] = h
+            train_orig_hash.add(h)
+
+    dup_found: list[dict[str, str]] = []
+    kept_test_items: list[tuple[str, str]] = []
+    kept_test_g: list[str] = []
+
+    for (p, c), gid in zip(test_items, test_g):
+        h = orig_md5_by_path.get(str(p))
+        if h is None:
+            h = _md5_file(Path(p))
+            orig_md5_by_path[str(p)] = h
+        if h in train_orig_hash:
+            dup_found.append({"hash": h, "test_path": str(p)})
+            continue
+        kept_test_items.append((str(p), str(c)))
+        kept_test_g.append(str(gid))
+
+    test_items = kept_test_items
+    test_g = kept_test_g
+    if not test_items:
+        raise SystemExit("all test samples removed due to hash overlap with train")
+
+    test_manifest_rows: list[tuple[str, str, str, str]] = []
+    for (p, c), gid in zip(test_items, test_g):
+        test_manifest_rows.append((str(p), str(c), str(gid), "orig"))
+    test_kind_counts = _kind_counts(test_manifest_rows)
+
+    _write_manifest_csv(out_dir / "train_manifest.csv", train_manifest_rows)
+    _write_manifest_csv(out_dir / "test_manifest.csv", test_manifest_rows)
 
     split_payload = {
         "seed": int(args.seed),
@@ -298,31 +390,22 @@ def main() -> int:
         "n_train_samples": int(len(train_items)),
         "n_test_samples": int(len(test_items)),
         "kind_counts_all": all_kind_counts,
+        "train_kind_counts": train_kind_counts,
+        "test_kind_counts": test_kind_counts,
+        "hash_overlap_removed_from_test": int(len(dup_found)),
+        "grid_n_jobs": int(st.grid_n_jobs),
+        "grid_pre_dispatch": str(st.grid_pre_dispatch),
     }
     (out_dir / "split_groups.json").write_text(json.dumps(split_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    train_manifest_rows: list[tuple[str, str, str, str]] = []
-    for (p, c), gid in zip(train_items, train_g):
-        train_manifest_rows.append((str(p), str(c), str(gid), _infer_kind_from_path(str(p))))
-    test_manifest_rows: list[tuple[str, str, str, str]] = []
-    for (p, c), gid in zip(test_items, test_g):
-        test_manifest_rows.append((str(p), str(c), str(gid), "orig"))
-
-    _write_manifest_csv(out_dir / "train_manifest.csv", train_manifest_rows)
-    _write_manifest_csv(out_dir / "test_manifest.csv", test_manifest_rows)
-
-    train_kind_counts = _kind_counts(train_manifest_rows)
-    test_kind_counts = _kind_counts(test_manifest_rows)
-
-    logger.info(
-        "split_done train={} test={} groups_train={} groups_test={} train_kind_counts={} test_kind_counts={}",
-        len(train_items),
-        len(test_items),
-        len(split.train_groups),
-        len(split.test_groups),
-        str(train_kind_counts),
-        str(test_kind_counts),
-    )
+    leakage_report = {
+        "groups_overlap": 0,
+        "train_kind_counts": train_kind_counts,
+        "test_kind_counts": test_kind_counts,
+        "orig_hash_overlap_removed_from_test": int(len(dup_found)),
+        "orig_hash_overlap_examples": dup_found[:50],
+    }
+    (out_dir / "leakage_check.json").write_text(json.dumps(leakage_report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     opts = ExtractOptions(img_size=int(args.img_size), photometric_normalize=bool(args.photometric_normalize))
 
@@ -334,7 +417,7 @@ def main() -> int:
     errors: list[dict[str, str]] = []
 
     t0 = time.time()
-    for (p, c), gid in tqdm(list(zip(train_items, train_g)), desc="features_train", unit="img", mininterval=1.0):
+    for ((p, c), gid) in tqdm(list(zip(train_items, train_g)), desc="features_train", unit="img", mininterval=1.0):
         try:
             X_train_list.append(extract_features_from_path(Path(p), opts))
             y_train_list.append(str(c))
@@ -352,33 +435,41 @@ def main() -> int:
     if not X_train_list or not X_test_list:
         raise SystemExit("no valid samples after feature extraction")
 
-    X_train = np.vstack(X_train_list).astype(np.float64)
-    X_test = np.vstack(X_test_list).astype(np.float64)
+    X_train = np.vstack(X_train_list).astype(np.float32, copy=False)
+    X_test = np.vstack(X_test_list).astype(np.float32, copy=False)
     y_train = np.array(y_train_list, dtype=object)
     y_test = np.array(y_test_list, dtype=object)
     g_train_arr = np.array(g_train_list, dtype=object)
 
     logger.info(
         "features_done train={} test={} failed={} elapsed_s={:.3f}",
-        X_train.shape[0],
-        X_test.shape[0],
-        len(errors),
-        time.time() - t0,
+        int(X_train.shape[0]),
+        int(X_test.shape[0]),
+        int(len(errors)),
+        float(time.time() - t0),
     )
 
     le = LabelEncoder()
     le.fit(y_train)
-    if not set(np.unique(y_test)).issubset(set(le.classes_)):
-        raise SystemExit("label set mismatch: test has unseen classes")
+
+    unseen = sorted(list(set(np.unique(y_test)).difference(set(le.classes_))))
+    if unseen:
+        raise SystemExit(f"test has unseen classes (label leakage/stratify issue): {unseen}")
 
     y_train_enc = le.transform(y_train)
     y_test_enc = le.transform(y_test)
 
     write_schema(out_dir / FEATURE_SCHEMA_FILE)
 
-    df_all = pd.DataFrame(np.vstack([X_train, X_test]), columns=[f"f{i:03d}" for i in range(int(X_train.shape[1]))])
-    df_all["label"] = np.concatenate([y_train, y_test], axis=0)
-    df_all.to_csv(out_dir / "features_188.csv", index=False, encoding="utf-8")
+    if bool(st.dump_features_csv):
+        df_all = pd.DataFrame(
+            np.vstack([X_train, X_test]),
+            columns=[f"f{i:03d}" for i in range(int(X_train.shape[1]))],
+        )
+        df_all["label"] = np.concatenate([y_train, y_test], axis=0)
+        df_all.to_csv(out_dir / "features_188.csv", index=False, encoding="utf-8")
+        del df_all
+        gc.collect()
 
     cv = group_cv(n_splits=int(args.cv_folds), seed=int(args.seed))
     specs = build_specs(seed=int(args.seed))
@@ -391,17 +482,20 @@ def main() -> int:
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     for spec in specs:
-        logger.info("grid_search_start model={}", spec.name)
+        logger.info("grid_search_start model={} grid_n_jobs={} pre_dispatch={}", spec.name, int(st.grid_n_jobs), str(st.grid_pre_dispatch))
+
         grid = GridSearchCV(
             estimator=spec.estimator,
             param_grid=spec.param_grid,
             scoring="f1_macro",
             cv=cv,
-            n_jobs=-1,
+            n_jobs=int(st.grid_n_jobs),
+            pre_dispatch=str(st.grid_pre_dispatch),
             refit=True,
             verbose=1,
             error_score="raise",
         )
+
         t1 = time.time()
         grid.fit(X_train, y_train_enc, groups=g_train_arr)
         fit_s = float(time.time() - t1)
@@ -441,11 +535,13 @@ def main() -> int:
         logger.info(
             "grid_search_done model={} test_macro_f1={:.4f} test_acc={:.4f} cv_best={:.4f} time_s={:.2f}",
             spec.name,
-            metrics["macro_f1"],
-            metrics["accuracy"],
+            float(metrics["macro_f1"]),
+            float(metrics["accuracy"]),
             float(grid.best_score_),
-            fit_s,
+            float(fit_s),
         )
+
+        gc.collect()
 
     pd.DataFrame(leaderboard).sort_values(by="test_macro_f1", ascending=False).to_csv(out_dir / "model_comparison.csv", index=False)
     write_json(out_dir / "model_comparison.json", {"leaderboard": leaderboard})
@@ -455,30 +551,6 @@ def main() -> int:
 
     joblib.dump(best_est, out_dir / MODEL_FILE)
     joblib.dump(le, out_dir / ENCODER_FILE)
-
-    train_orig = [Path(p) for (p, _c), k in zip(train_items, [_infer_kind_from_path(str(p)) for p, _c in train_items]) if k == "orig"]
-    test_orig = [Path(p) for (p, _c) in test_items]
-
-    train_hash = {}
-    for p in tqdm(train_orig, desc="hash_train_orig", unit="img", mininterval=1.0):
-        train_hash[_md5_file(p)] = str(p)
-
-    dup = []
-    for p in tqdm(test_orig, desc="hash_test_orig", unit="img", mininterval=1.0):
-        h = _md5_file(p)
-        if h in train_hash:
-            dup.append({"hash": h, "train_path": train_hash[h], "test_path": str(p)})
-            if len(dup) >= 50:
-                break
-
-    leakage_report = {
-        "groups_overlap": int(len(overlap_groups)),
-        "train_kind_counts": train_kind_counts,
-        "test_kind_counts": test_kind_counts,
-        "orig_hash_overlap_count": int(len(dup)),
-        "orig_hash_overlap_examples": dup,
-    }
-    (out_dir / "leakage_check.json").write_text(json.dumps(leakage_report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     meta = {
         "final_model": best_name,
@@ -502,7 +574,11 @@ def main() -> int:
         "kind_counts_all": all_kind_counts,
         "train_kind_counts": train_kind_counts,
         "test_kind_counts": test_kind_counts,
-        "leakage_check": {"groups_overlap": int(len(overlap_groups)), "orig_hash_overlap_count": int(len(dup))},
+        "leakage_check": {"groups_overlap": 0, "orig_hash_overlap_removed_from_test": int(len(dup_found))},
+        "dataset_integrity": integrity,
+        "grid_n_jobs": int(st.grid_n_jobs),
+        "grid_pre_dispatch": str(st.grid_pre_dispatch),
+        "dump_features_csv": bool(st.dump_features_csv),
     }
     (out_dir / TRAIN_META_FILE).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     if errors:
@@ -518,6 +594,8 @@ def main() -> int:
         "train_manifest": out_dir / "train_manifest.csv",
         "test_manifest": out_dir / "test_manifest.csv",
         "leakage_check": out_dir / "leakage_check.json",
+        "dataset_integrity": out_dir / "dataset_integrity.json",
+        "features": out_dir / "features_188.csv",
     }
     params = {
         "seed": int(args.seed),
@@ -528,6 +606,9 @@ def main() -> int:
         "photometric_normalize": bool(args.photometric_normalize),
         "features_dim": int(X_train.shape[1]),
         "feature_schema_sha1": SCHEMA.sha1(),
+        "grid_n_jobs": int(st.grid_n_jobs),
+        "grid_pre_dispatch": str(st.grid_pre_dispatch),
+        "dump_features_csv": bool(st.dump_features_csv),
     }
     tags = {"pipeline": "features_188", "selection": "best_macro_f1", "final_model": best_name}
     maybe_mlflow_log(params=params, metrics={"final_macro_f1": float(best_score)}, artifacts=artifacts, tags=tags, enabled=st.mlflow_enabled)

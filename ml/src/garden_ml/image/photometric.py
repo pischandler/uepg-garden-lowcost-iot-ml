@@ -4,9 +4,18 @@ import cv2
 import numpy as np
 
 
-def gray_world_rgb(rgb: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+def gray_world_rgb(rgb: np.ndarray, mask: np.ndarray | None = None, eps: float = 1e-6) -> np.ndarray:
     x = rgb.astype(np.float32)
-    means = x.reshape(-1, 3).mean(axis=0)
+    if mask is not None:
+        fg = mask > 0
+        if bool(np.any(fg)):
+            vals = x[fg]
+            means = vals.mean(axis=0)
+        else:
+            means = x.reshape(-1, 3).mean(axis=0)
+    else:
+        means = x.reshape(-1, 3).mean(axis=0)
+
     g = float(means.mean())
     scale = g / (means + float(eps))
     y = x * scale.reshape(1, 1, 3)
@@ -71,6 +80,6 @@ def clahe_hsv_v_rgb(
 
 
 def normalize_pipeline_rgb(rgb: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
-    x = gray_world_rgb(rgb)
+    x = gray_world_rgb(rgb, mask=mask)
     x = clahe_hsv_v_rgb(x, mask=mask, clip_limit=2.0, tile_grid=(8, 8))
     return x

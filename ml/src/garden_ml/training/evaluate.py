@@ -37,6 +37,34 @@ def load_training_meta(artifacts_dir: Path) -> dict[str, Any]:
         return {}
 
 
+def expected_calibration_error(probs: np.ndarray, y_true: np.ndarray, n_bins: int = 15) -> float:
+    conf = probs.max(axis=1)
+    pred = probs.argmax(axis=1)
+    correct = (pred == y_true).astype(np.float64)
+
+    bins = np.linspace(0.0, 1.0, int(n_bins) + 1)
+    ece = 0.0
+    n = float(len(conf))
+    if n <= 0:
+        return 0.0
+
+    for i in range(int(n_bins)):
+        lo = bins[i]
+        hi = bins[i + 1]
+        if i == int(n_bins) - 1:
+            m = (conf >= lo) & (conf <= hi)
+        else:
+            m = (conf >= lo) & (conf < hi)
+        if not bool(np.any(m)):
+            continue
+        frac = float(np.sum(m)) / n
+        acc = float(np.mean(correct[m]))
+        avg_conf = float(np.mean(conf[m]))
+        ece += frac * abs(acc - avg_conf)
+
+    return float(ece)
+
+
 def _load_test_manifest_csv(p: Path) -> list[tuple[Path, str]]:
     out: list[tuple[Path, str]] = []
     with p.open("r", newline="", encoding="utf-8") as f:
@@ -95,6 +123,14 @@ def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest
     metrics = compute_metrics(y_enc, y_pred, labels=list(le.classes_))
     cm = confusion_matrix(y_enc, y_pred)
 
+    if hasattr(model, "predict_proba"):
+        probs = model.predict_proba(X)
+        metrics["ece_15"] = expected_calibration_error(np.asarray(probs, dtype=np.float64), y_enc, n_bins=15)
+        metrics["avg_confidence"] = float(np.mean(np.max(probs, axis=1)))
+    else:
+        metrics["ece_15"] = 0.0
+        metrics["avg_confidence"] = 0.0
+
     latency = {
         "feature_ms_mean": float(np.mean(times_feat)),
         "feature_ms_p50": float(np.percentile(times_feat, 50)),
@@ -109,6 +145,7 @@ def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest
         "confusion_matrix": cm.tolist(),
         "classes": list(le.classes_),
         "latency": latency,
+        "img_size_used": int(img_size),
     }
 
 
@@ -162,8 +199,8 @@ def main() -> int:
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset_dir", type=str, default="dataset_aug")
-    ap.add_argument("--artifacts_dir", type=str, default="artifacts/model_registry/v0003")
-    ap.add_argument("--img_size", type=int, default=128)
+    ap.add_argument("--artifacts_dir", type=str, default="artifacts/model_registry/v0004")
+    ap.add_argument("--img_size", type=int, default=0)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--manifest", type=str, default="augmentation_manifest.csv")
     args = ap.parse_args()
@@ -175,20 +212,22 @@ def main() -> int:
 
     meta = load_training_meta(artifacts_dir)
     trained_norm = bool(meta.get("photometric_normalize", False))
+    meta_size = int(meta.get("img_size", 128))
+    img_size = int(args.img_size) if int(args.img_size) > 0 else int(meta_size)
 
     logger.info(
         "eval_start dataset_dir={} artifacts_dir={} img_size={} manifest={} trained_photometric_normalize={}",
         str(dataset_dir),
         str(artifacts_dir),
-        int(args.img_size),
+        int(img_size),
         str(args.manifest),
         bool(trained_norm),
     )
 
-    eval_trained = eval_dataset(dataset_dir, artifacts_dir, img_size=int(args.img_size), manifest=args.manifest, normalize=trained_norm)
-    eval_base = eval_dataset(dataset_dir, artifacts_dir, img_size=int(args.img_size), manifest=args.manifest, normalize=False)
-    eval_norm = eval_dataset(dataset_dir, artifacts_dir, img_size=int(args.img_size), manifest=args.manifest, normalize=True)
-    sens = illumination_sensitivity(dataset_dir, artifacts_dir, img_size=int(args.img_size), manifest=args.manifest)
+    eval_trained = eval_dataset(dataset_dir, artifacts_dir, img_size=int(img_size), manifest=args.manifest, normalize=trained_norm)
+    eval_base = eval_dataset(dataset_dir, artifacts_dir, img_size=int(img_size), manifest=args.manifest, normalize=False)
+    eval_norm = eval_dataset(dataset_dir, artifacts_dir, img_size=int(img_size), manifest=args.manifest, normalize=True)
+    sens = illumination_sensitivity(dataset_dir, artifacts_dir, img_size=int(img_size), manifest=args.manifest)
 
     write_json(out_dir / "eval_trained.json", eval_trained)
     write_json(out_dir / "eval_base.json", eval_base)

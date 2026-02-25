@@ -12,10 +12,11 @@ static const uint32_t WDT_TIMEOUT_SECONDS = 10;
 
 static const uint16_t HTTP_PORT = 80;
 
+// LED flash (PWM) - canal ajustado para evitar conflito/instabilidade
 static const int LED_FLASH_GPIO = 22;
 static const uint32_t LED_FLASH_PWM_FREQ = 5000;
 static const uint8_t LED_FLASH_PWM_BITS = 8;
-static const uint8_t LED_FLASH_PWM_CH = 7;
+static const uint8_t LED_FLASH_PWM_CH = 4; // <-- era 7
 static const uint16_t LED_FLASH_ON_DELAY_MS = 140;
 static const uint8_t LED_FLASH_MAX_DUTY = 255;
 
@@ -62,6 +63,11 @@ struct RuntimeConfig
   char infer_host[64];
   uint16_t infer_port;
   char infer_path[64];
+
+  uint16_t infer_min_lux_raw;    // 0 = desabilita gate por lux
+  bool infer_use_led;            // permite usar LED como assist
+  uint8_t infer_max_retries;     // 0 = sem retry
+  uint16_t infer_retry_delay_ms; // delay entre retries
 };
 
 class ConfigStore
