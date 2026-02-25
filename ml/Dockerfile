@@ -3,6 +3,7 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
+ENV NO_ALBUMENTATIONS_UPDATE=1
 
 WORKDIR /app
 
@@ -14,11 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libglib2.0-0 \
   && rm -rf /var/lib/apt/lists/*
 
-# Código do pacote ML dentro da imagem (para build reproducível)
 COPY ml/ ./ml/
 
 RUN pip install --no-cache-dir -U pip \
-  && pip install --no-cache-dir -e "./ml[dev]" \
+  && pip install --no-cache-dir -e "./ml" \
   && pip install --no-cache-dir gunicorn
 
 EXPOSE 5000

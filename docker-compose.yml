@@ -8,7 +8,7 @@ services:
     environment:
       - GML_LOG_LEVEL=INFO
       - GML_SAVE_DEBUG=0
-      - GML_ARTIFACTS_DIR=/app/ml/artifacts/model_registry/v0003
+      - GML_ARTIFACTS_DIR=/app/ml/artifacts/model_registry/v0004
       - GML_HOST=0.0.0.0
       - GML_PORT=5000
     ports:
@@ -25,7 +25,7 @@ services:
   garden-ml-dev:
     build:
       context: .
-      dockerfile: ml/Dockerfile
+      dockerfile: ml/Dockerfile.dev
     platform: linux/amd64
     working_dir: /app/ml
     volumes:

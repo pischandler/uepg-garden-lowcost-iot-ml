@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -38,7 +39,23 @@ def _fill_background_gray(gray: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return g
 
 
-def extract_features_from_rgb(rgb: np.ndarray, opts: ExtractOptions) -> np.ndarray:
+def _mean_v_hsv(segmented_rgb: np.ndarray, mask: np.ndarray) -> float:
+    hsv = cv2.cvtColor(segmented_rgb, cv2.COLOR_RGB2HSV)
+    v = hsv[:, :, 2]
+    fg = mask > 0
+    vals = v[fg] if bool(np.any(fg)) else v.reshape(-1)
+    return float(np.mean(vals)) if int(vals.size) > 0 else 0.0
+
+
+def _laplacian_var(gray: np.ndarray, mask: np.ndarray) -> float:
+    g = gray.astype(np.uint8, copy=False)
+    lap = cv2.Laplacian(g, cv2.CV_64F)
+    fg = mask > 0
+    vals = lap[fg] if bool(np.any(fg)) else lap.reshape(-1)
+    return float(np.var(vals)) if int(vals.size) > 0 else 0.0
+
+
+def extract_features_and_meta_from_rgb(rgb: np.ndarray, opts: ExtractOptions) -> tuple[np.ndarray, dict[str, Any]]:
     segmented, mask = segment_leaf_hsv(rgb, size=(opts.img_size, opts.img_size))
 
     if opts.photometric_normalize:
@@ -60,6 +77,26 @@ def extract_features_from_rgb(rgb: np.ndarray, opts: ExtractOptions) -> np.ndarr
 
     feat = np.hstack([har, zer, hsvh, lbph, hu, mean_hsv, std_hsv, shp, labms, labh, chroma]).astype(np.float64)
     validate_dim(int(feat.size))
+
+    nz = int(np.count_nonzero(mask))
+    total = int(mask.size)
+    coverage = float(nz / max(1, total))
+
+    mean_v = _mean_v_hsv(segmented, mask)
+    lap_var = _laplacian_var(gray_tex, mask)
+
+    meta = {
+        "mask_nonzero": nz,
+        "mask_total": total,
+        "mask_coverage": coverage,
+        "mean_v": float(mean_v),
+        "laplacian_var": float(lap_var),
+    }
+    return feat, meta
+
+
+def extract_features_from_rgb(rgb: np.ndarray, opts: ExtractOptions) -> np.ndarray:
+    feat, _meta = extract_features_and_meta_from_rgb(rgb, opts)
     return feat
 
 

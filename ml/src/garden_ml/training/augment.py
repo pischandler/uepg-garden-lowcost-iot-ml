@@ -17,9 +17,9 @@ from tqdm import tqdm
 from garden_ml.config.constants import DEFAULT_AUG_CONFIG, DEFAULT_AUG_MANIFEST
 from garden_ml.config.logging import setup_logging
 from garden_ml.data.io import is_image_file
+from garden_ml.data.manifest import make_group_id
 from garden_ml.image.resize import letterbox_rgb
 from garden_ml.image.segmentation import segment_leaf_hsv
-
 from loguru import logger
 
 
@@ -38,7 +38,7 @@ def save_jpeg(rgb: np.ndarray, out_path: Path, quality: int) -> None:
     Image.fromarray(rgb).save(out_path, format="JPEG", quality=int(quality), optimize=True)
 
 
-def build_aug_pipeline() -> tuple[A.Compose, dict]:
+def build_aug_pipeline(seed: int | None) -> tuple[A.Compose, dict]:
     pipeline = A.Compose(
         [
             A.OneOf(
@@ -72,6 +72,7 @@ def build_aug_pipeline() -> tuple[A.Compose, dict]:
             ),
         ],
         p=1.0,
+        seed=int(seed) if seed is not None else None,
     )
 
     desc = {
@@ -88,6 +89,19 @@ def build_aug_pipeline() -> tuple[A.Compose, dict]:
         "median_blur": 3,
     }
     return pipeline, desc
+
+
+def _set_aug_seed(compose: A.Compose, seed: int) -> None:
+    s = int(seed) & 0xFFFFFFFF
+    if hasattr(compose, "set_random_seed"):
+        compose.set_random_seed(s)
+        return
+    if hasattr(compose, "set_random_state"):
+        rng = np.random.default_rng(s)
+        py_rng = random.Random(s)
+        compose.set_random_state(rng, py_rng)
+        return
+    raise RuntimeError("albumentations Compose does not support set_random_seed/set_random_state")
 
 
 def main() -> int:
@@ -111,7 +125,7 @@ def main() -> int:
         raise SystemExit(f"input_dir not found: {in_dir}")
 
     set_seed(int(args.seed))
-    aug, aug_desc = build_aug_pipeline()
+    aug, aug_desc = build_aug_pipeline(seed=int(args.seed))
 
     classes = sorted([x.name for x in in_dir.iterdir() if x.is_dir()])
     if not classes:
@@ -137,6 +151,7 @@ def main() -> int:
         "no_originals": bool(args.no_originals),
         "segment_before_aug": bool(args.segment_before_aug),
         "pipeline": aug_desc,
+        "albumentations_version": getattr(A, "__version__", ""),
     }
     config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -163,12 +178,10 @@ def main() -> int:
     bar = tqdm(total=len(items), desc="augmenting", unit="img", mininterval=1.0)
     for c, img_path in items:
         bar.update(1)
-        group_id = f"{c}/{img_path.stem}"
+        group_id = make_group_id(c, img_path.stem)
         class_out = out_dir / c
         class_out.mkdir(parents=True, exist_ok=True)
 
-        pil = None
-        rgb = None
         try:
             pil = Image.open(img_path).convert("RGB")
             rgb = np.asarray(pil, dtype=np.uint8)
@@ -177,28 +190,45 @@ def main() -> int:
             if bool(args.segment_before_aug):
                 rgb, _mask = segment_leaf_hsv(rgb, size=size)
 
-            src_rel = str(img_path.resolve().relative_to(in_dir.resolve()))
-            seed_img = (int(args.seed) + stable_int_seed(f"{src_rel}|{group_id}")) % (2**31 - 1)
+        except Exception as e:
+            failed += 1
+            rows.append([c, group_id, str(img_path), "", "error", "", str(int(args.seed)), "error", str(e).replace("\n", " ").strip()])
+            continue
 
-            if include_originals:
+        try:
+            src_rel = str(img_path.resolve().relative_to(in_dir.resolve()))
+        except Exception:
+            src_rel = str(img_path)
+
+        seed_img = (int(args.seed) + stable_int_seed(f"{src_rel}|{group_id}")) & 0xFFFFFFFF
+
+        if include_originals:
+            try:
                 out_orig = class_out / f"{img_path.stem}__orig.jpg"
                 save_jpeg(rgb, out_orig, quality=int(args.jpeg_quality))
                 rows.append([c, group_id, src_rel, str(out_orig.relative_to(out_dir)), "orig", "", str(seed_img), "ok", ""])
                 saved_orig += 1
+            except Exception as e:
+                failed += 1
+                rows.append([c, group_id, src_rel, "", "orig", "", str(seed_img), "error", str(e).replace("\n", " ").strip()])
 
-            for k in range(1, int(args.aug_per_image) + 1):
-                rng = np.random.default_rng(seed_img + k)
-                A.set_seed(int(rng.integers(0, 2**31 - 1)))
-                auged = aug(image=rgb)["image"]
-                auged = np.clip(auged, 0, 255).astype(np.uint8)
+        for k in range(1, int(args.aug_per_image) + 1):
+            try:
+                seed_k = (seed_img + int(k)) & 0xFFFFFFFF
+                _set_aug_seed(aug, seed_k)
+                out = aug(image=rgb)
+                auged = out.get("image", None)
+                if auged is None:
+                    raise RuntimeError("albumentations returned no 'image'")
+                auged = np.clip(auged, 0, 255).astype(np.uint8, copy=False)
+
                 out_aug = class_out / f"{img_path.stem}__aug{k:03d}.jpg"
                 save_jpeg(auged, out_aug, quality=int(args.jpeg_quality))
                 rows.append([c, group_id, src_rel, str(out_aug.relative_to(out_dir)), "aug", str(k), str(seed_img), "ok", ""])
                 saved_aug += 1
-
-        except Exception as e:
-            failed += 1
-            rows.append([c, group_id, str(img_path), "", "error", "", str(int(args.seed)), "error", str(e).replace("\n", " ").strip()])
+            except Exception as e:
+                failed += 1
+                rows.append([c, group_id, src_rel, "", "aug", str(k), str(seed_img), "error", str(e).replace("\n", " ").strip()])
 
     bar.close()
 
@@ -207,17 +237,23 @@ def main() -> int:
         w.writerow(["class", "group_id", "source_path", "output_path", "kind", "aug_index", "seed", "status", "error"])
         w.writerows(rows)
 
-    if int(args.aug_per_image) > 0 and saved_aug == 0:
-        raise SystemExit("augmentation produced zero augmented samples (check pipeline and output dir)")
+    aug_file_count = 0
+    for pth in out_dir.rglob("*.jpg"):
+        if "__aug" in pth.stem:
+            aug_file_count += 1
+
+    if int(args.aug_per_image) > 0 and int(aug_file_count) == 0:
+        raise SystemExit("no __aug files found after augmentation")
 
     logger.info(
-        "augment_done output={} manifest={} config={} saved_orig={} saved_aug={} failed={}",
+        "augment_done output={} manifest={} config={} saved_orig={} saved_aug={} failed={} aug_files={}",
         str(out_dir),
         str(manifest_path),
         str(config_path),
         int(saved_orig),
         int(saved_aug),
         int(failed),
+        int(aug_file_count),
     )
     return 0
 

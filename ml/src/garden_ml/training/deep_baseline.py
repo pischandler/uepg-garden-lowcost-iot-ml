@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -43,6 +44,17 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _md5_file(p: Path) -> str:
+    h = hashlib.md5()
+    with p.open("rb") as f:
+        while True:
+            b = f.read(1024 * 1024)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
 class ImgDataset(Dataset):
     def __init__(self, items: list[Sample], class_to_idx: dict[str, int], tfm):
         self.items = items
@@ -80,7 +92,7 @@ def main() -> int:
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset_dir", type=str, default="dataset_aug")
-    ap.add_argument("--output_dir", type=str, default="artifacts/model_registry/v0002_dl")
+    ap.add_argument("--output_dir", type=str, default="artifacts/model_registry/v0004_dl")
     ap.add_argument("--img_size", type=int, default=224)
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch", type=int, default=32)
@@ -95,8 +107,17 @@ def main() -> int:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("deep_start dataset_dir={} output_dir={} img_size={} epochs={} batch={} lr={} seed={} test_size={}",
-                str(dataset_dir), str(out_dir), int(args.img_size), int(args.epochs), int(args.batch), float(args.lr), int(args.seed), float(args.test_size))
+    logger.info(
+        "deep_start dataset_dir={} output_dir={} img_size={} epochs={} batch={} lr={} seed={} test_size={}",
+        str(dataset_dir),
+        str(out_dir),
+        int(args.img_size),
+        int(args.epochs),
+        int(args.batch),
+        float(args.lr),
+        int(args.seed),
+        float(args.test_size),
+    )
 
     try:
         rows = samples_from_manifest(dataset_dir, args.manifest, include_kinds={"orig", "aug"}, require_status_ok=True)
@@ -104,6 +125,37 @@ def main() -> int:
     except Exception:
         raw = scan_folder_dataset(dataset_dir)
         samples = [Sample(p, cls, gid, "orig") for p, cls, gid in raw]
+
+    orig_md5_by_gid: dict[str, str] = {}
+    md5_to_classes: dict[str, set[str]] = {}
+    md5_to_gids: dict[str, set[str]] = {}
+    first_gid_by_key: dict[tuple[str, str], str] = {}
+    gid_remap: dict[str, str] = {}
+
+    for s in tqdm([x for x in samples if x.kind == "orig"], desc="deep_hash_orig", unit="img", mininterval=1.0):
+        h = _md5_file(s.path)
+        orig_md5_by_gid[str(s.gid)] = h
+        md5_to_classes.setdefault(h, set()).add(str(s.cls))
+        md5_to_gids.setdefault(h, set()).add(str(s.gid))
+
+        key = (str(s.cls), h)
+        if key in first_gid_by_key:
+            tgt = first_gid_by_key[key]
+            if str(s.gid) != tgt:
+                gid_remap[str(s.gid)] = tgt
+        else:
+            first_gid_by_key[key] = str(s.gid)
+
+    bad_md5 = [h for h, cs in md5_to_classes.items() if len(cs) > 1]
+    bad_gids: set[str] = set()
+    for h in bad_md5:
+        bad_gids.update(md5_to_gids.get(h, set()))
+
+    if bad_gids:
+        samples = [s for s in samples if str(s.gid) not in bad_gids]
+
+    if gid_remap:
+        samples = [Sample(s.path, s.cls, gid_remap.get(str(s.gid), str(s.gid)), s.kind) for s in samples]
 
     groups = {}
     for s in samples:
@@ -114,6 +166,24 @@ def main() -> int:
 
     train = [s for s in samples if s.gid in split.train_groups]
     test = [s for s in samples if s.gid in split.test_groups and s.kind == "orig"]
+
+    train_orig_hash: set[str] = set()
+    for s in train:
+        if s.kind == "orig":
+            train_orig_hash.add(_md5_file(s.path))
+
+    kept_test: list[Sample] = []
+    removed = 0
+    for s in test:
+        h = _md5_file(s.path)
+        if h in train_orig_hash:
+            removed += 1
+            continue
+        kept_test.append(s)
+    test = kept_test
+
+    if not train or not test:
+        raise SystemExit("invalid split after dedup (empty train/test)")
 
     classes = sorted(list({s.cls for s in samples}))
     class_to_idx = {c: i for i, c in enumerate(classes)}
@@ -183,7 +253,19 @@ def main() -> int:
             best_macro = float(m["macro_f1"])
             torch.save({"model": model.state_dict(), "classes": classes, "img_size": int(args.img_size)}, best_path)
 
-    meta = {"model": "mobilenet_v3_small", "best_macro_f1": best_macro, "classes": classes, "img_size": int(args.img_size)}
+    meta = {
+        "model": "mobilenet_v3_small",
+        "best_macro_f1": best_macro,
+        "classes": classes,
+        "img_size": int(args.img_size),
+        "test_size": float(args.test_size),
+        "seed": int(args.seed),
+        "dedup_gid_remap_count": int(len(gid_remap)),
+        "cross_class_duplicate_groups_removed": int(len(bad_gids)),
+        "hash_overlap_removed_from_test": int(removed),
+        "n_train": int(len(train)),
+        "n_test": int(len(test)),
+    }
     (out_dir / "training_metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     logger.info("deep_done best_path={} best_macro_f1={:.4f}", str(best_path), float(best_macro))
