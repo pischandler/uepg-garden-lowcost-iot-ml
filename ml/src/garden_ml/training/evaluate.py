@@ -65,6 +65,29 @@ def expected_calibration_error(probs: np.ndarray, y_true: np.ndarray, n_bins: in
     return float(ece)
 
 
+def calibration_bins(probs: np.ndarray, y_true: np.ndarray, n_bins: int = 15) -> list[dict[str, float]]:
+    """Per-bin accuracy and confidence for calibration curve (used when [viz] is installed)."""
+    conf = probs.max(axis=1)
+    pred = probs.argmax(axis=1)
+    correct = (pred == y_true).astype(np.float64)
+    bins_edges = np.linspace(0.0, 1.0, int(n_bins) + 1)
+    out: list[dict[str, float]] = []
+    for i in range(int(n_bins)):
+        lo, hi = bins_edges[i], bins_edges[i + 1]
+        if i == int(n_bins) - 1:
+            m = (conf >= lo) & (conf <= hi)
+        else:
+            m = (conf >= lo) & (conf < hi)
+        if not bool(np.any(m)):
+            continue
+        count = float(np.sum(m))
+        acc = float(np.mean(correct[m]))
+        avg_conf = float(np.mean(conf[m]))
+        bin_center = (lo + hi) / 2.0
+        out.append({"bin_center": bin_center, "accuracy": acc, "confidence": avg_conf, "count": count})
+    return out
+
+
 def _load_test_manifest_csv(p: Path) -> list[tuple[Path, str]]:
     out: list[tuple[Path, str]] = []
     with p.open("r", newline="", encoding="utf-8") as f:
@@ -94,11 +117,11 @@ def _resolve_eval_items(dataset_dir: Path, artifacts_dir: Path, manifest: str) -
         return [(p, c) for p, c, _g in raw]
 
 
-def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest: str, normalize: bool) -> dict[str, Any]:
+def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest: str) -> dict[str, Any]:
     items = _resolve_eval_items(dataset_dir, artifacts_dir, manifest)
 
     model, le = load_artifacts(artifacts_dir)
-    opts = ExtractOptions(img_size=img_size, photometric_normalize=normalize)
+    opts = ExtractOptions(img_size=img_size)
 
     X_list: list[np.ndarray] = []
     y_list: list[str] = []
@@ -123,10 +146,13 @@ def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest
     metrics = compute_metrics(y_enc, y_pred, labels=list(le.classes_))
     cm = confusion_matrix(y_enc, y_pred)
 
+    calibration_bins_data: list[dict[str, float]] = []
     if hasattr(model, "predict_proba"):
         probs = model.predict_proba(X)
-        metrics["ece_15"] = expected_calibration_error(np.asarray(probs, dtype=np.float64), y_enc, n_bins=15)
+        probs_arr = np.asarray(probs, dtype=np.float64)
+        metrics["ece_15"] = expected_calibration_error(probs_arr, y_enc, n_bins=15)
         metrics["avg_confidence"] = float(np.mean(np.max(probs, axis=1)))
+        calibration_bins_data = calibration_bins(probs_arr, y_enc, n_bins=15)
     else:
         metrics["ece_15"] = 0.0
         metrics["avg_confidence"] = 0.0
@@ -139,14 +165,17 @@ def eval_dataset(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest
         "total_ms_per_sample_est": float(np.mean(times_feat) + pred_ms),
     }
 
-    return {
-        "normalize": bool(normalize),
+    result: dict[str, Any] = {
+        "normalize": False,
         "metrics": metrics,
         "confusion_matrix": cm.tolist(),
         "classes": list(le.classes_),
         "latency": latency,
         "img_size_used": int(img_size),
     }
+    if calibration_bins_data:
+        result["calibration_bins"] = calibration_bins_data
+    return result
 
 
 def illumination_sensitivity(dataset_dir: Path, artifacts_dir: Path, img_size: int, manifest: str) -> dict[str, Any]:
@@ -165,8 +194,8 @@ def illumination_sensitivity(dataset_dir: Path, artifacts_dir: Path, img_size: i
         {"name": "brightness_plus20", "gamma": 1.0, "alpha": 1.0, "beta": 20.0},
     ]
 
-    def run_scenario(normalize: bool, name: str, gamma: float, alpha: float, beta: float) -> dict[str, Any]:
-        opts = ExtractOptions(img_size=img_size, photometric_normalize=normalize)
+    def run_scenario(name: str, gamma: float, alpha: float, beta: float) -> dict[str, Any]:
+        opts = ExtractOptions(img_size=img_size)
 
         X_list: list[np.ndarray] = []
         y_list: list[str] = []
@@ -185,13 +214,8 @@ def illumination_sensitivity(dataset_dir: Path, artifacts_dir: Path, img_size: i
         m = compute_metrics(y_enc, y_pred, labels=list(le.classes_))
         return {"scenario": name, "metrics": {k: v for k, v in m.items() if k != "per_class"}, "per_class": m["per_class"]}
 
-    base = []
-    norm = []
-    for s in scenarios:
-        base.append(run_scenario(False, s["name"], s["gamma"], s["alpha"], s["beta"]))
-        norm.append(run_scenario(True, s["name"], s["gamma"], s["alpha"], s["beta"]))
-
-    return {"base": base, "normalized": norm, "scenarios": scenarios}
+    results = [run_scenario(s["name"], s["gamma"], s["alpha"], s["beta"]) for s in scenarios]
+    return {"scenarios": results, "scenarios_config": scenarios}
 
 
 def main() -> int:
@@ -211,31 +235,32 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     meta = load_training_meta(artifacts_dir)
-    trained_norm = bool(meta.get("photometric_normalize", False))
     meta_size = int(meta.get("img_size", 128))
     img_size = int(args.img_size) if int(args.img_size) > 0 else int(meta_size)
 
     logger.info(
-        "eval_start dataset_dir={} artifacts_dir={} img_size={} manifest={} trained_photometric_normalize={}",
+        "eval_start dataset_dir={} artifacts_dir={} img_size={} manifest={}",
         str(dataset_dir),
         str(artifacts_dir),
         int(img_size),
         str(args.manifest),
-        bool(trained_norm),
     )
 
-    eval_trained = eval_dataset(dataset_dir, artifacts_dir, img_size=int(img_size), manifest=args.manifest, normalize=trained_norm)
-    eval_base = eval_dataset(dataset_dir, artifacts_dir, img_size=int(img_size), manifest=args.manifest, normalize=False)
-    eval_norm = eval_dataset(dataset_dir, artifacts_dir, img_size=int(img_size), manifest=args.manifest, normalize=True)
+    eval_result = eval_dataset(dataset_dir, artifacts_dir, img_size=int(img_size), manifest=args.manifest)
     sens = illumination_sensitivity(dataset_dir, artifacts_dir, img_size=int(img_size), manifest=args.manifest)
 
-    write_json(out_dir / "eval_trained.json", eval_trained)
-    write_json(out_dir / "eval_base.json", eval_base)
-    write_json(out_dir / "eval_normalized.json", eval_norm)
+    write_json(out_dir / "eval_trained.json", eval_result)
+    write_json(out_dir / "eval_base.json", eval_result)
     write_json(out_dir / "illumination_sensitivity.json", sens)
 
-    pd.DataFrame(eval_base["metrics"]["per_class"]).to_csv(out_dir / "per_class_base.csv", index=False)
-    pd.DataFrame(eval_norm["metrics"]["per_class"]).to_csv(out_dir / "per_class_normalized.csv", index=False)
+    pd.DataFrame(eval_result["metrics"]["per_class"]).to_csv(out_dir / "per_class_base.csv", index=False)
+
+    try:
+        from garden_ml.viz.plots import write_eval_plots
+        write_eval_plots(out_dir, eval_result)
+        logger.info("eval_plots_written calibration_curve.png confusion_matrix.png")
+    except ImportError:
+        pass
 
     logger.info("eval_done output_dir={}", str(out_dir))
     return 0

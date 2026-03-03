@@ -1,0 +1,26 @@
+# Dev image: tests, augment, train, eval (docker compose run garden-ml-dev <cmd>).
+# Build from repo root: docker build -f ml/Dockerfile.dev -t garden-ml-dev .
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    build-essential \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY ml/ ./ml/
+
+RUN pip install --no-cache-dir -U pip \
+    && pip install --no-cache-dir -e "./ml[dev,reports,tracking,viz]"
+
+LABEL org.opencontainers.image.title="garden-ml-dev"
+LABEL org.opencontainers.image.description="Smart Tomato Garden ML dev (pytest, augment, train, eval)"
+
+CMD ["bash"]

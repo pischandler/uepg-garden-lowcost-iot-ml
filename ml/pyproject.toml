@@ -27,11 +27,15 @@ dependencies = [
   "prometheus-client>=0.20",
   "requests>=2.32",
   "psutil>=5.9",
+  "orjson>=3.9.0",
 ]
 
 [project.optional-dependencies]
 reports = ["pandas>=2.0"]
 tracking = ["mlflow>=2.12"]
+viz = ["matplotlib>=3.7"]
+onnx = ["onnx>=1.15", "onnxruntime>=1.16", "skl2onnx>=1.16"]
+explain = ["shap>=0.44"]
 dev = [
   "pytest>=8.0",
   "ruff>=0.6",

@@ -25,11 +25,10 @@ def test_predict_topk_shapes():
         model=DummyModel(),
         encoder=DummyEnc(),
         classes=["A", "B"],
-        photometric_normalize_default=False,
         img_size=128,
     )
     rgb = np.zeros((128, 128, 3), dtype=np.uint8)
-    cls, score, topk, timings, quality = predict_topk(arts, rgb, k=2, photometric_normalize=False)
+    cls, score, topk, timings, quality = predict_topk(arts, rgb, k=2)
 
     assert cls in {"A", "B"}
     assert isinstance(score, float)

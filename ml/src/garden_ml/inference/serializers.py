@@ -28,5 +28,4 @@ class PredictionResponse(BaseModel):
     min_mean_v: float
     min_laplacian_var: float
 
-    photometric_normalize_used: bool
     model_img_size: int

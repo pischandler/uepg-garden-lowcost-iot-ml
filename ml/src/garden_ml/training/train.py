@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,13 +33,37 @@ from sklearn.svm import SVC
 from tqdm import tqdm
 from xgboost import XGBClassifier
 
-from garden_ml.config.constants import ENCODER_FILE, FEATURE_SCHEMA_FILE, MODEL_FILE, TRAIN_META_FILE
+from garden_ml.config.constants import DEFAULT_MODEL_REGISTRY_DIR, ENCODER_FILE, FEATURE_SCHEMA_FILE, MODEL_FILE, TRAIN_META_FILE
 from garden_ml.config.logging import setup_logging
+from garden_ml.inference.onnx_export import export_pipeline_to_onnx
 from garden_ml.config.settings import Settings
 from garden_ml.data.manifest import class_distribution, samples_from_manifest, scan_folder_dataset, write_json
 from garden_ml.data.splits import expand_groups, stratified_group_split
 from garden_ml.features.extract import ExtractOptions, extract_features_from_path
 from garden_ml.features.schema import SCHEMA, write_schema
+
+
+def next_registry_version(registry_dir: Path) -> Path:
+    """Create and return the next versioned dir (v0001, v0002, ...) under registry_dir. Uses mkdir to avoid races."""
+    registry_dir = Path(registry_dir)
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    pattern = re.compile(r"^v(\d{4})$")
+    versions: list[int] = []
+    for p in registry_dir.iterdir():
+        if p.is_dir() and pattern.match(p.name):
+            try:
+                versions.append(int(pattern.match(p.name).group(1)))
+            except (ValueError, AttributeError):
+                pass
+    next_num = max(versions, default=0) + 1
+    for _ in range(1000):
+        out = registry_dir / f"v{next_num:04d}"
+        try:
+            out.mkdir(parents=True, exist_ok=False)
+            return out
+        except FileExistsError:
+            next_num += 1
+    raise RuntimeError("could not create a new version dir in model_registry")
 
 
 def set_seed(seed: int) -> None:
@@ -57,12 +82,7 @@ class ModelSpec:
 def build_specs(seed: int) -> list[ModelSpec]:
     rf = RandomForestClassifier(random_state=seed, n_jobs=-1)
 
-    svm = Pipeline(
-        [
-            ("scaler", StandardScaler()),
-            ("svc", SVC(probability=True, random_state=seed)),
-        ]
-    )
+    svm = SVC(probability=True, random_state=seed)
 
     xgb = XGBClassifier(
         objective="multi:softprob",
@@ -88,9 +108,9 @@ def build_specs(seed: int) -> list[ModelSpec]:
             name="SVM",
             estimator=svm,
             param_grid={
-                "svc__kernel": ["rbf"],
-                "svc__C": [0.1, 1.0, 10.0],
-                "svc__gamma": ["scale", "auto"],
+                "kernel": ["rbf"],
+                "C": [0.1, 1.0, 10.0],
+                "gamma": ["scale", "auto"],
             },
         ),
         ModelSpec(
@@ -212,16 +232,26 @@ def _md5_file(p: Path) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset_dir", type=str, default="dataset_aug")
-    ap.add_argument("--output_dir", type=str, default="artifacts/model_registry/v0004")
+    ap.add_argument(
+        "--output_dir",
+        type=str,
+        default="",
+        help="Output dir for artifacts. If empty or a registry root (e.g. artifacts/model_registry), the next version dir (v0005, v0006, ...) is used. Pass a full path (e.g. artifacts/model_registry/v0007) to target a specific version.",
+    )
     ap.add_argument("--img_size", type=int, default=128)
     ap.add_argument("--test_size", type=float, default=0.30)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--cv_folds", type=int, default=5)
     ap.add_argument("--manifest", type=str, default="augmentation_manifest.csv")
-    ap.add_argument("--photometric_normalize", action="store_true")
     args = ap.parse_args()
 
-    out_dir = Path(args.output_dir)
+    registry_root = Path(args.output_dir) if args.output_dir else DEFAULT_MODEL_REGISTRY_DIR
+    # If path looks like a registry root (no version segment vXXXX), use next version dir
+    if not re.match(r"^v\d{4}$", registry_root.name):
+        out_dir = next_registry_version(registry_root)
+        logger.info("auto_version output_dir={}", str(out_dir))
+    else:
+        out_dir = registry_root
     st = Settings(img_size=int(args.img_size), seed=int(args.seed), artifacts_dir=out_dir)
     setup_logging(st.log_level)
 
@@ -239,7 +269,7 @@ def main() -> int:
     from_manifest = manifest_path.is_file()
 
     logger.info(
-        "train_start dataset_dir={} output_dir={} img_size={} test_size={} seed={} cv_folds={} manifest={} photometric_normalize={} mlflow_enabled={}",
+        "train_start dataset_dir={} output_dir={} img_size={} test_size={} seed={} cv_folds={} manifest={} mlflow_enabled={}",
         str(dataset_dir),
         str(out_dir),
         int(args.img_size),
@@ -247,7 +277,6 @@ def main() -> int:
         int(args.seed),
         int(args.cv_folds),
         str(args.manifest),
-        bool(args.photometric_normalize),
         bool(st.mlflow_enabled),
     )
 
@@ -407,7 +436,7 @@ def main() -> int:
     }
     (out_dir / "leakage_check.json").write_text(json.dumps(leakage_report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    opts = ExtractOptions(img_size=int(args.img_size), photometric_normalize=bool(args.photometric_normalize))
+    opts = ExtractOptions(img_size=int(args.img_size))
 
     X_train_list: list[np.ndarray] = []
     y_train_list: list[str] = []
@@ -458,6 +487,10 @@ def main() -> int:
 
     y_train_enc = le.transform(y_train)
     y_test_enc = le.transform(y_test)
+
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
 
     write_schema(out_dir / FEATURE_SCHEMA_FILE)
 
@@ -552,6 +585,9 @@ def main() -> int:
     joblib.dump(best_est, out_dir / MODEL_FILE)
     joblib.dump(le, out_dir / ENCODER_FILE)
 
+    pipeline_for_onnx = Pipeline([("scaler", scaler), ("model", best_est)])
+    export_pipeline_to_onnx(pipeline_for_onnx, out_dir / "model.onnx", n_features=int(X_train.shape[1]))
+
     meta = {
         "final_model": best_name,
         "final_macro_f1": float(best_score),
@@ -562,7 +598,7 @@ def main() -> int:
         "classes": list(le.classes_),
         "feature_schema": SCHEMA.as_dict(),
         "feature_schema_sha1": SCHEMA.sha1(),
-        "photometric_normalize": bool(args.photometric_normalize),
+        "photometric_normalize": False,
         "dataset_dir": str(dataset_dir),
         "n_train": int(X_train.shape[0]),
         "n_test": int(X_test.shape[0]),
@@ -603,7 +639,6 @@ def main() -> int:
         "test_size": float(args.test_size),
         "cv_folds": int(args.cv_folds),
         "final_model": best_name,
-        "photometric_normalize": bool(args.photometric_normalize),
         "features_dim": int(X_train.shape[1]),
         "feature_schema_sha1": SCHEMA.sha1(),
         "grid_n_jobs": int(st.grid_n_jobs),

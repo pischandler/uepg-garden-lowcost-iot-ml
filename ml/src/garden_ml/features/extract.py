@@ -20,14 +20,12 @@ from garden_ml.features.components import (
     zernike_25,
 )
 from garden_ml.features.schema import validate_dim
-from garden_ml.image.photometric import normalize_pipeline_rgb
 from garden_ml.image.segmentation import segment_leaf_hsv
 
 
 @dataclass(frozen=True)
 class ExtractOptions:
     img_size: int
-    photometric_normalize: bool = False
 
 
 def _fill_background_gray(gray: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -57,9 +55,6 @@ def _laplacian_var(gray: np.ndarray, mask: np.ndarray) -> float:
 
 def extract_features_and_meta_from_rgb(rgb: np.ndarray, opts: ExtractOptions) -> tuple[np.ndarray, dict[str, Any]]:
     segmented, mask = segment_leaf_hsv(rgb, size=(opts.img_size, opts.img_size))
-
-    if opts.photometric_normalize:
-        segmented = normalize_pipeline_rgb(segmented, mask=mask)
 
     gray = cv2.cvtColor(segmented, cv2.COLOR_RGB2GRAY)
     gray_tex = _fill_background_gray(gray, mask)

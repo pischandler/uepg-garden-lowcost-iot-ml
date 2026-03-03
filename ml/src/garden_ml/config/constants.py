@@ -11,6 +11,7 @@ DEFAULT_AUG_MANIFEST = "augmentation_manifest.csv"
 DEFAULT_AUG_CONFIG = "augmentation_config.json"
 
 MODEL_FILE = "modelo_tomate.pkl"
+MODEL_FILE_DL = "mobilenetv3_small_best.pt"
 ENCODER_FILE = "label_encoder.pkl"
 TRAIN_META_FILE = "training_metadata.json"
 FEATURE_SCHEMA_FILE = "feature_schema.json"

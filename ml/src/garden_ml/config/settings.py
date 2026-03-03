@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     min_laplacian_var: float = Field(default=0.0)    # nitidez (variância do laplaciano)
 
     artifacts_dir: Path = Field(default=Path("artifacts") / "model_registry" / "v0004")
+    artifacts_dir_dl: Path | None = Field(default=None, description="MobileNet artifacts dir; None disables /predict_mobilenet and /predict_compare")
     reports_dir: Path = Field(default=Path("reports"))
 
     mlflow_enabled: bool = Field(default=True)
