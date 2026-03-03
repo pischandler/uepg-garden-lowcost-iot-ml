@@ -16,6 +16,7 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <LittleFS.h>
+#include <cstdio>
 #include <cstring>
 #include <freertos/semphr.h>
 
@@ -261,11 +262,23 @@ private:
   size_t idx;
 };
 
+/** Timeout (ms) for camera fbGet during MJPEG stream; higher resolutions need more time. */
+static uint32_t streamCaptureTimeoutMs()
+{
+  uint8_t fs = ConfigStore::get().cam_framesize;
+  if (fs >= 8)
+    return 250;
+  if (fs >= 6)
+    return 180;
+  return 100;
+}
+
 class AsyncJpegStreamResponse : public AsyncAbstractResponse
 {
 public:
-  AsyncJpegStreamResponse() : fb(nullptr), fbIdx(0), headIdx(0), needCrlf(false)
+  AsyncJpegStreamResponse() : fb(nullptr), fbIdx(0), headLen(0), headIdx(0), needCrlf(false)
   {
+    head[0] = '\0';
     _code = 200;
     _contentType = "multipart/x-mixed-replace;boundary=frame";
     _sendContentLength = false;
@@ -291,21 +304,24 @@ public:
     {
       if (!fb)
       {
-        fb = CameraAccess::fbGet(80);
+        uint32_t timeout = streamCaptureTimeoutMs();
+        fb = CameraAccess::fbGet(timeout);
         if (!fb)
           break;
 
-        head = String("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ") + String(fb->len) + String("\r\n\r\n");
+        headLen = (size_t)snprintf(head, sizeof(head), "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", (unsigned)fb->len);
+        if (headLen >= sizeof(head))
+          headLen = sizeof(head) - 1;
         headIdx = 0;
         fbIdx = 0;
         needCrlf = true;
       }
 
-      if (headIdx < (size_t)head.length())
+      if (headIdx < headLen)
       {
-        size_t rem = (size_t)head.length() - headIdx;
+        size_t rem = headLen - headIdx;
         size_t n = rem < (maxLen - out) ? rem : (maxLen - out);
-        std::memcpy(buf + out, head.c_str() + headIdx, n);
+        std::memcpy(buf + out, head + headIdx, n);
         headIdx += n;
         out += n;
         continue;
@@ -342,7 +358,9 @@ public:
 private:
   camera_fb_t *fb;
   size_t fbIdx;
-  String head;
+  static constexpr size_t HEAD_BUF_SIZE = 80;
+  char head[HEAD_BUF_SIZE];
+  size_t headLen;
   size_t headIdx;
   bool needCrlf;
 };
@@ -397,7 +415,7 @@ void CameraServer::begin()
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
             {
     Metrics::incHttp();
-    AsyncWebServerResponse *r = request->beginResponse_P(200, "text/html", INDEX_HTML_GZ, INDEX_HTML_GZ_LEN);
+    AsyncWebServerResponse *r = request->beginResponse(200, "text/html", INDEX_HTML_GZ, INDEX_HTML_GZ_LEN);
     r->addHeader("Content-Encoding", "gzip");
     r->addHeader("Cache-Control", "no-store");
     r->addHeader("ETag", INDEX_HTML_SHA1);
@@ -406,7 +424,7 @@ void CameraServer::begin()
   server.on("/health", HTTP_GET, [](AsyncWebServerRequest *request)
             {
               Metrics::incHttp();
-              StaticJsonDocument<448> doc;
+              JsonDocument doc;
               doc["ip"] = Networking::ip();
               doc["rssi"] = Networking::rssi();
               doc["online"] = Networking::online();
@@ -423,7 +441,7 @@ void CameraServer::begin()
   server.on("/metrics", HTTP_GET, [](AsyncWebServerRequest *request)
             {
               Metrics::incHttp();
-              StaticJsonDocument<384> doc;
+              JsonDocument doc;
               doc["http"] = Metrics::http();
               doc["capture"] = Metrics::capture();
               doc["stream_clients"] = Metrics::streamClients();
@@ -442,7 +460,7 @@ void CameraServer::begin()
             {
               Metrics::incHttp();
               auto cfg = ConfigStore::get();
-              StaticJsonDocument<256> doc;
+              JsonDocument doc;
               doc["quality"] = cfg.cam_quality;
               doc["framesize"] = cfg.cam_framesize;
               doc["led_intensity"] = cfg.led_duty;
@@ -477,7 +495,7 @@ void CameraServer::begin()
                 int q = val;
                 if (q < 10) q = 10;
                 if (q > 63) q = 63;
-                StaticJsonDocument<96> doc;
+                JsonDocument doc;
                 doc["cam_quality"] = (uint8_t)q;
                 String js;
                 serializeJson(doc, js);
@@ -490,7 +508,7 @@ void CameraServer::begin()
                 int fs = val;
                 if (fs < 0) fs = 0;
                 if (fs > 13) fs = 13;
-                StaticJsonDocument<96> doc;
+                JsonDocument doc;
                 doc["cam_framesize"] = (uint8_t)fs;
                 String js;
                 serializeJson(doc, js);
@@ -503,7 +521,7 @@ void CameraServer::begin()
                 int d = val;
                 if (d < 0) d = 0;
                 if (d > 255) d = 255;
-                StaticJsonDocument<96> doc;
+                JsonDocument doc;
                 doc["led_duty"] = (uint8_t)d;
                 String js;
                 serializeJson(doc, js);
@@ -525,7 +543,7 @@ void CameraServer::begin()
               Metrics::incHttp();
               SensorsSnapshot s = Sensors::latest();
               uint32_t now = millis();
-              StaticJsonDocument<320> doc;
+              JsonDocument doc;
               doc["ts_ms"] = s.ts_ms;
               doc["age_ms"] = now - s.ts_ms;
               doc["soil_raw"] = s.soil_raw;
@@ -554,7 +572,7 @@ void CameraServer::begin()
               if (sinceLastRun < cfg.pump_cooldown_ms)
                 cooldownRemaining = cfg.pump_cooldown_ms - sinceLastRun;
 
-              StaticJsonDocument<256> doc;
+              JsonDocument doc;
               doc["pump_on"] = s.pump_on;
               doc["pump_until_ms"] = s.pump_until_ms;
               doc["remaining_ms"] = remaining;
@@ -572,7 +590,7 @@ void CameraServer::begin()
             {
               Metrics::incHttp();
               updateWatchdogWatermarks();
-              StaticJsonDocument<384> doc;
+              JsonDocument doc;
               uint32_t heapNow = (uint32_t)ESP.getFreeHeap();
               uint32_t heapMax = (uint32_t)ESP.getMaxAllocHeap();
               uint32_t psramNow = (uint32_t)ESP.getFreePsram();
@@ -606,12 +624,12 @@ void CameraServer::begin()
                                  req->send(429, "text/plain", "rate_limited");
                                  return;
                                }
-                               StaticJsonDocument<128> doc;
+                               JsonDocument doc;
                                auto err = deserializeJson(doc, body);
                                uint32_t ms = 0;
                                if (!err) ms = (uint32_t)(doc["ms"] | 0);
                                bool ok = Irrigation::start(ms);
-                               StaticJsonDocument<128> out;
+                               JsonDocument out;
                                out["ok"] = ok;
                                out["ms"] = ms;
                                String js;
@@ -628,7 +646,7 @@ void CameraServer::begin()
                                  return;
                                }
                                bool ok = Irrigation::stop();
-                               StaticJsonDocument<64> out;
+                               JsonDocument out;
                                out["ok"] = ok;
                                String js;
                                serializeJson(out, js);
@@ -659,7 +677,7 @@ void CameraServer::begin()
             {
               Metrics::incHttp();
               auto cfg = ConfigStore::get();
-              StaticJsonDocument<640> doc;
+              JsonDocument doc;
               doc["infer_enabled"] = cfg.infer_enabled;
               doc["infer_skip_when_streaming"] = cfg.infer_skip_when_streaming;
               doc["infer_period_ms"] = cfg.infer_period_ms;
@@ -704,7 +722,7 @@ void CameraServer::begin()
                 return;
               }
               InferenceClient::requestRun();
-              StaticJsonDocument<128> doc;
+              JsonDocument doc;
               doc["ok"] = true;
               doc["queued"] = true;
               doc["api_version"] = API_VERSION;
@@ -716,6 +734,112 @@ void CameraServer::begin()
             {
               Metrics::incHttp();
               sendJson(request, InferenceClient::lastJson()); });
+
+  server.on("/api/inference/schema", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+              Metrics::incHttp();
+              static const char *const CLASS_IDS[] = { "Tomato_Leaf_Mold", "Tomato_Early_blight", "Tomato__Target_Spot", "Tomato_Late_blight", "Tomato_Septoria_leaf_spot", "Tomato_Bacterial_spot", "Tomato_healthy" };
+              static const char *const REASON_IDS[] = { "low_light", "blurry", "low_lux_skip", "infer_host_empty", "camera_fb_get_fail", "http_fail", "wifi_disconnected", "unknown" };
+              JsonDocument doc;
+              JsonArray classes = doc["classes"].to<JsonArray>();
+              for (size_t i = 0; i < sizeof(CLASS_IDS) / sizeof(CLASS_IDS[0]); i++)
+                classes.add(CLASS_IDS[i]);
+              JsonArray reasons = doc["reasons"].to<JsonArray>();
+              for (size_t i = 0; i < sizeof(REASON_IDS) / sizeof(REASON_IDS[0]); i++)
+                reasons.add(REASON_IDS[i]);
+              String out;
+              serializeJson(doc, out);
+              sendJson(request, out); });
+
+  server.on("/api/dashboard", HTTP_GET, [](AsyncWebServerRequest *request)
+            {
+              Metrics::incHttp();
+              JsonDocument doc;
+              JsonObject root = doc.to<JsonObject>();
+
+              JsonObject health = root["health"].to<JsonObject>();
+              health["ip"] = Networking::ip();
+              health["rssi"] = Networking::rssi();
+              health["online"] = Networking::online();
+              health["device_id"] = Networking::deviceId();
+              health["heap"] = (int)ESP.getFreeHeap();
+              health["psram"] = (int)ESP.getFreePsram();
+              health["uptime_ms"] = (uint32_t)millis();
+              health["stream_clients"] = Metrics::streamClients();
+              health["api_version"] = API_VERSION;
+
+              SensorsSnapshot s = Sensors::latest();
+              uint32_t now = millis();
+              JsonObject sensors = root["sensors"].to<JsonObject>();
+              sensors["ts_ms"] = s.ts_ms;
+              sensors["age_ms"] = now - s.ts_ms;
+              sensors["soil_raw"] = s.soil_raw;
+              sensors["lux_raw"] = s.lux_raw;
+              sensors["soil_pct"] = s.soil_pct;
+              sensors["temp_c"] = s.temp_c;
+              sensors["hum_pct"] = s.hum_pct;
+              sensors["dht_ok"] = s.dht_ok;
+              sensors["api_version"] = API_VERSION;
+
+              auto cfg = ConfigStore::get();
+              IrrigationState irr = Irrigation::state();
+              uint32_t remaining = 0;
+              if (irr.pump_on && (int32_t)(irr.pump_until_ms - now) > 0)
+                remaining = irr.pump_until_ms - now;
+              uint32_t cooldownRemaining = 0;
+              uint32_t sinceLastRun = now - irr.last_run_ms;
+              if (sinceLastRun < cfg.pump_cooldown_ms)
+                cooldownRemaining = cfg.pump_cooldown_ms - sinceLastRun;
+              JsonObject irrigation = root["irrigation"].to<JsonObject>();
+              irrigation["pump_on"] = irr.pump_on;
+              irrigation["pump_until_ms"] = irr.pump_until_ms;
+              irrigation["remaining_ms"] = remaining;
+              irrigation["last_run_ms"] = irr.last_run_ms;
+              irrigation["auto_enabled"] = irr.auto_enabled;
+              irrigation["cooldown_remaining_ms"] = cooldownRemaining;
+              irrigation["soil_dry_threshold_pct"] = cfg.soil_dry_threshold_pct;
+              irrigation["pump_on_ms"] = cfg.pump_on_ms;
+              irrigation["api_version"] = API_VERSION;
+
+              JsonObject camera = root["camera"].to<JsonObject>();
+              camera["quality"] = cfg.cam_quality;
+              camera["framesize"] = cfg.cam_framesize;
+              camera["led_intensity"] = cfg.led_duty;
+              camera["api_version"] = API_VERSION;
+
+              JsonObject metrics = root["metrics"].to<JsonObject>();
+              metrics["http"] = Metrics::http();
+              metrics["capture"] = Metrics::capture();
+              metrics["stream_clients"] = Metrics::streamClients();
+              metrics["mqtt_pub"] = Metrics::mqttPub();
+              metrics["mqtt_fail"] = Metrics::mqttFail();
+              metrics["logs"] = Metrics::logs();
+              metrics["infer_attempt"] = Metrics::inferAttempt();
+              metrics["infer_ok"] = Metrics::inferOk();
+              metrics["infer_fail"] = Metrics::inferFail();
+              metrics["api_version"] = API_VERSION;
+
+              JsonDocument configTmp;
+              if (deserializeJson(configTmp, ConfigStore::toJson()) == DeserializationError::Ok)
+              {
+                JsonObject configObj = root["config"].to<JsonObject>();
+                for (JsonPair kv : configTmp.as<JsonObject>())
+                  configObj[kv.key()] = kv.value();
+              }
+
+              JsonDocument lastTmp;
+              if (deserializeJson(lastTmp, InferenceClient::lastJson()) == DeserializationError::Ok)
+              {
+                JsonObject lastObj = root["lastInfer"].to<JsonObject>();
+                for (JsonPair kv : lastTmp.as<JsonObject>())
+                  lastObj[kv.key()] = kv.value();
+              }
+              else
+                root["lastInfer"].to<JsonObject>();
+
+              String out;
+              serializeJson(doc, out);
+              sendJson(request, out); });
 
   server.on("/api/inference/status", HTTP_GET, [](AsyncWebServerRequest *request)
             {
@@ -737,7 +861,7 @@ void CameraServer::begin()
                                  return;
                                }
 
-                               StaticJsonDocument<384> doc;
+                               JsonDocument doc;
                                auto err = deserializeJson(doc, body);
                                if (err)
                                {
@@ -771,7 +895,7 @@ void CameraServer::begin()
                                line += esc(notes);
                                Storage::appendInferenceFeedbackCsv(line.c_str());
 
-                               StaticJsonDocument<96> out;
+                               JsonDocument out;
                                out["ok"] = true;
                                out["api_version"] = API_VERSION;
                                String js;

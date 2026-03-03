@@ -177,7 +177,7 @@ namespace
                    bool confident, const String &reasons,
                    const String &raw)
   {
-    StaticJsonDocument<1400> doc;
+    JsonDocument doc;
     doc["ok"] = ok;
     doc["http_status"] = httpCode;
     doc["latency_ms"] = latencyMs;
@@ -212,7 +212,7 @@ namespace
   {
     out = ParsedResp{};
 
-    StaticJsonDocument<4096> r;
+    JsonDocument r;
     auto err = deserializeJson(r, raw);
     if (err)
       return false;
@@ -355,7 +355,7 @@ namespace
     if (newQ < 58)
       newQ = (uint8_t)(newQ + 5);
 
-    StaticJsonDocument<128> doc;
+    JsonDocument doc;
     doc["cam_framesize"] = newFs;
     doc["cam_quality"] = newQ;
     String js;
@@ -637,7 +637,7 @@ String InferenceClient::lastJson()
 
 String InferenceClient::statusJson()
 {
-  StaticJsonDocument<384> doc;
+  JsonDocument doc;
   doc["api_version"] = "1.2.0";
   doc["queued"] = g_runRequested;
   doc["running"] = g_running;
@@ -655,15 +655,15 @@ String InferenceClient::statusJson()
 
 String InferenceClient::diagnosticsJson()
 {
-  StaticJsonDocument<2048> doc;
+  JsonDocument doc;
   doc["api_version"] = "1.2.0";
   doc["count"] = g_diagCount;
-  JsonArray arr = doc.createNestedArray("items");
+  JsonArray arr = doc["items"].to<JsonArray>();
   for (uint8_t i = 0; i < g_diagCount; i++)
   {
     uint8_t pos = (uint8_t)((g_diagWriteIdx + INFER_FAIL_RING_SIZE - g_diagCount + i) % INFER_FAIL_RING_SIZE);
     const InferDiagEntry &d = g_diagRing[pos];
-    JsonObject o = arr.createNestedObject();
+    JsonObject o = arr.add<JsonObject>();
     o["ts_ms"] = d.ts_ms;
     o["http_status"] = d.http_status;
     o["latency_ms"] = d.latency_ms;

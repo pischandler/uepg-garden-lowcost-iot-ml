@@ -46,7 +46,7 @@ void Log::event(const char *name, std::initializer_list<Log::KVI> ints,
                 std::initializer_list<Log::KVB> bools,
                 std::initializer_list<Log::KVF> floats)
 {
-  StaticJsonDocument<768> doc;
+  JsonDocument doc;
   auto o = doc.to<JsonObject>();
   fillBase(o, name);
   for (auto &kv : ints)

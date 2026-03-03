@@ -6,10 +6,33 @@ static const char *EVENTS_PATH = "/events.log";
 static const char *INFER_CSV_PATH = "/inference.csv";
 static const char *INFER_FEEDBACK_CSV_PATH = "/inference_feedback.csv";
 static uint32_t lastFlushMs = 0;
+static bool fsReady = false;
+
+static bool mountFs(bool formatOnFail)
+{
+  if (!LittleFS.begin(formatOnFail, "/littlefs", 10, "spiffs"))
+    return false;
+
+  // Guard against a mounted-but-invalid filesystem geometry.
+  if (LittleFS.totalBytes() == 0)
+  {
+    LittleFS.end();
+    return false;
+  }
+  return true;
+}
 
 void Storage::begin()
 {
-  LittleFS.begin(true);
+  fsReady = mountFs(false);
+  if (!fsReady)
+  {
+    LittleFS.format();
+    fsReady = mountFs(true);
+  }
+
+  if (!fsReady)
+    Serial.println("{\"event\":\"storage_unavailable\"}");
 }
 
 bool Storage::shouldBuffer()
@@ -20,6 +43,9 @@ bool Storage::shouldBuffer()
 
 void Storage::appendEvent(const char *line)
 {
+  if (!fsReady)
+    return;
+
   File f = LittleFS.open(EVENTS_PATH, "a");
   if (!f)
     return;
@@ -29,6 +55,9 @@ void Storage::appendEvent(const char *line)
 
 String Storage::drainEvents(size_t maxBytes)
 {
+  if (!fsReady)
+    return "";
+
   File f = LittleFS.open(EVENTS_PATH, "r");
   if (!f)
     return "";
@@ -65,6 +94,9 @@ static void ensureCsvHeader()
 
 void Storage::appendInferenceCsv(const char *line)
 {
+  if (!fsReady)
+    return;
+
   ensureCsvHeader();
 
   File f = LittleFS.open(INFER_CSV_PATH, "a");
@@ -84,6 +116,9 @@ void Storage::appendInferenceCsv(const char *line)
 
 void Storage::appendInferenceFeedbackCsv(const char *line)
 {
+  if (!fsReady)
+    return;
+
   if (!LittleFS.exists(INFER_FEEDBACK_CSV_PATH))
   {
     File h = LittleFS.open(INFER_FEEDBACK_CSV_PATH, "w");

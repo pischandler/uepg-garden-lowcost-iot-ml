@@ -225,7 +225,7 @@ static bool applyKey(const char *k, JsonVariant v)
 
 void ConfigStore::setPartialJson(const char *json)
 {
-  StaticJsonDocument<1024> doc;
+  JsonDocument doc;
   auto err = deserializeJson(doc, json);
   if (err)
     return;
@@ -239,7 +239,7 @@ void ConfigStore::setPartialJson(const char *json)
 
 String ConfigStore::toJson()
 {
-  StaticJsonDocument<1024> doc;
+  JsonDocument doc;
 
   doc["soil_dry_threshold_pct"] = cfg.soil_dry_threshold_pct;
   doc["pump_on_ms"] = cfg.pump_on_ms;
