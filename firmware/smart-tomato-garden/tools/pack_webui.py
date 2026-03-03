@@ -52,6 +52,7 @@ def build(project_dir: Path) -> None:
     "mappers.js",
     "inference.js",
     "render.js",
+    "store.js",
     "app.js",
   ]
   i18n_dir = web_dir / "i18n"

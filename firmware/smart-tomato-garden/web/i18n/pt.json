@@ -178,5 +178,12 @@
   "label.language": "Idioma",
   "lang.pt": "PT",
   "lang.en": "EN",
-  "lang.cn": "中文"
+  "lang.cn": "中文",
+  "section.inference_config": "Configuracao do servidor de inferencia",
+  "label.infer_host": "Servidor (IP ou hostname)",
+  "label.infer_port": "Porta",
+  "label.infer_path": "Caminho da API",
+  "action.save_inference_config": "Salvar",
+  "config.inference_saved_toast": "Configuracao salva",
+  "config.inference_save_failed": "Falha ao salvar configuracao"
 }

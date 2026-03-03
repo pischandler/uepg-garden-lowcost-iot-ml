@@ -21,19 +21,29 @@
     return r.text();
   }
 
-  async function refreshPayload() {
-    const paths = [
-      jget("/health"),
-      jget("/api/sensors"),
-      jget("/api/irrigation"),
-      jget("/status"),
-      jget("/metrics"),
-      jget("/api/config"),
-      jget("/api/inference/last")
-    ];
-    const [health, sensors, irrigation, camera, metrics, config, lastInfer] = await Promise.all(paths);
-    return { health, sensors, irrigation, camera, metrics, config, lastInfer };
+  async function getDashboard() {
+    const r = await fetch("/api/dashboard", { cache: "no-store" });
+    if (!r.ok) throw new Error("/api/dashboard " + r.status);
+    return r.json();
   }
 
-  window.STGApi = { jget, jpost, textget, refreshPayload };
+  async function refreshPayload() {
+    try {
+      return await getDashboard();
+    } catch (e) {
+      const paths = [
+        jget("/health"),
+        jget("/api/sensors"),
+        jget("/api/irrigation"),
+        jget("/status"),
+        jget("/metrics"),
+        jget("/api/config"),
+        jget("/api/inference/last")
+      ];
+      const [health, sensors, irrigation, camera, metrics, config, lastInfer] = await Promise.all(paths);
+      return { health, sensors, irrigation, camera, metrics, config, lastInfer };
+    }
+  }
+
+  window.STGApi = { jget, jpost, textget, getDashboard, refreshPayload };
 })();

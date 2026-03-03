@@ -4,6 +4,7 @@
   const I = window.STGInference;
   const F = window.STGFmt;
   const T = window.STGI18n;
+  const Store = window.STGStore;
   function t(key, params) { return T.t(key, params); }
 
   const state = {
@@ -41,16 +42,18 @@
     return 30 * 60 * 1000;
   }
 
-  function filteredHistory() {
+  function filteredHistory(histSource) {
+    const hist = histSource || state.hist;
     const range = R.$("trendRange") ? R.$("trendRange").value : "30m";
     const windowMs = rangeToMs(range);
     const now = Date.now();
     const out = { temp: [], soil: [], pump: [] };
-    for (let i = 0; i < state.hist.ts.length; i++) {
-      if (now - state.hist.ts[i] <= windowMs) {
-        out.temp.push(state.hist.temp[i]);
-        out.soil.push(state.hist.soil[i]);
-        out.pump.push(state.hist.pump[i]);
+    if (!hist || !hist.ts) return out;
+    for (let i = 0; i < hist.ts.length; i++) {
+      if (now - hist.ts[i] <= windowMs) {
+        out.temp.push(hist.temp[i]);
+        out.soil.push(hist.soil[i]);
+        out.pump.push(hist.pump[i]);
       }
     }
     return out;
@@ -84,13 +87,14 @@
     ul.innerHTML = "";
     if (!state.feed.length) {
       const empty = document.createElement("li");
-      empty.className = "emptyFeed";
+      empty.className = "emptyFeed u-feed-item-style";
       empty.textContent = t("events.none");
       ul.appendChild(empty);
       return;
     }
     state.feed.forEach(function (line) {
       const li = document.createElement("li");
+      li.className = "u-feed-item-style";
       const tag = document.createElement("span");
       tag.className = "feedTag";
       tag.textContent = line.kind;
@@ -194,7 +198,12 @@
 
   function snapshotFrameLoop() {
     if (!state.streaming) return;
+    state.snapshotTick = null;
     R.$("view").src = "/capture?ts=" + Date.now();
+  }
+
+  function scheduleNextSnapshot() {
+    if (!state.streaming || !shouldUseSnapshotLoop() || state.snapshotTick) return;
     state.snapshotTick = setTimeout(snapshotFrameLoop, streamIntervalMs());
   }
 
@@ -221,6 +230,38 @@
 
   async function cameraControl(name, value) {
     await A.textget("/control?var=" + encodeURIComponent(name) + "&val=" + encodeURIComponent(String(value)));
+  }
+
+  async function runInferenceAction() {
+    var wasStreaming = state.streaming;
+    var prevTs = Number(state.lastInferTs || 0);
+    if (wasStreaming) {
+      updateStream(false);
+      await sleep(220);
+    }
+    R.$("diagnosisMain").classList.add("loading");
+    await A.jpost("/api/inference/run", {});
+    pushFeed("inferencia", t("inference.requested"));
+    var start = Date.now();
+    while (Date.now() - start < 5000) {
+      await sleep(380);
+      var last = null;
+      try {
+        last = await A.jget("/api/inference/last");
+      } catch (e) {
+        continue;
+      }
+      var ts = Number(last && last.ts_ms) || 0;
+      if (ts > prevTs) break;
+    }
+    await refreshAll({ silent: true });
+    if (wasStreaming) updateStream(true);
+  }
+
+  async function saveInferenceConfigAction(host, port, path) {
+    await A.jpost("/api/inference/config", { infer_host: host, infer_port: port, infer_path: path || "/predict" });
+    pushFeed("config", t("config.inference_saved_toast"));
+    await refreshAll({ silent: true });
   }
 
   async function irrigate(ms) {
@@ -253,6 +294,22 @@
     }
   }
 
+  function isOverviewVisible() {
+    const panel = document.querySelector('.panel[data-panel="overview"]');
+    return panel && !panel.classList.contains("is-hidden");
+  }
+
+  function setupStoreSubscribers() {
+    Store.subscribe(function (s) {
+      R.setSystem(s);
+      var vm = I.toViewModel(s.lastInfer);
+      R.setInference(vm, s.lastInfer);
+      R.setGuidedAlert(vm);
+      if (isOverviewVisible()) R.setDashboard(s, vm, filteredHistory(s.hist));
+      R.setRaw(s);
+    });
+  }
+
   async function refreshAll(opts) {
     const options = opts || {};
     if (state.refreshInFlight) return state.refreshInFlight;
@@ -260,19 +317,14 @@
     if (!options.silent) setBtnLoading("btnRefresh", true, "action.refresh_all");
 
     state.refreshInFlight = (async function () {
-    const payload = await A.refreshPayload();
-    R.setSystem(payload);
-    const vm = I.toViewModel(payload.lastInfer);
-    state.lastInferTs = Number(payload.lastInfer && payload.lastInfer.ts_ms) || state.lastInferTs;
-    pushHist(state.hist.temp, Number(payload.sensors && payload.sensors.temp_c), 2200);
-    pushHist(state.hist.soil, Number(payload.sensors && payload.sensors.soil_pct), 2200);
-    pushHist(state.hist.ts, Date.now(), 2200);
-    state.hist.pump.push(payload.irrigation && payload.irrigation.pump_on ? 1 : 0);
-    while (state.hist.pump.length > 2200) state.hist.pump.shift();
-    R.setInference(vm, payload.lastInfer);
-    R.setGuidedAlert(vm);
-    R.setDashboard(payload, vm, filteredHistory());
-    R.setRaw(payload);
+      var payload = await A.refreshPayload();
+      state.lastInferTs = Number(payload.lastInfer && payload.lastInfer.ts_ms) || state.lastInferTs;
+      pushHist(state.hist.temp, Number(payload.sensors && payload.sensors.temp_c), 2200);
+      pushHist(state.hist.soil, Number(payload.sensors && payload.sensors.soil_pct), 2200);
+      pushHist(state.hist.ts, Date.now(), 2200);
+      state.hist.pump.push(payload.irrigation && payload.irrigation.pump_on ? 1 : 0);
+      while (state.hist.pump.length > 2200) state.hist.pump.shift();
+      Store.updateState({ health: payload.health, sensors: payload.sensors, irrigation: payload.irrigation, camera: payload.camera, metrics: payload.metrics, config: payload.config, lastInfer: payload.lastInfer, hist: state.hist });
       R.setSyncState(t("status.updated_now"), "");
     })();
 
@@ -314,6 +366,7 @@
         setHud();
       }
       R.setCameraLoading(false);
+      scheduleNextSnapshot();
     });
     camera.addEventListener("error", function () {
       state.reconnectCount++;
@@ -321,8 +374,12 @@
       R.showToast(t("camera.stream_fail"), "warn");
       pushFeed("camera", t("camera.stream_fail"));
       if (state.streaming) {
-        stopStreamLoops();
-        setTimeout(function () { if (state.streaming) startStreamTransport(); }, 900);
+        if (shouldUseSnapshotLoop()) {
+          scheduleNextSnapshot();
+        } else {
+          stopStreamLoops();
+          setTimeout(function () { if (state.streaming) startStreamTransport(); }, 900);
+        }
       }
       setHud();
     });
@@ -387,40 +444,25 @@
       );
     });
 
+    var btnSaveInferenceConfig = R.$("btnSaveInferenceConfig");
+    if (btnSaveInferenceConfig) {
+      btnSaveInferenceConfig.addEventListener("click", async function () {
+        await runAction(
+          { id: "btnSaveInferenceConfig", busyText: "action.save_inference_config", toastOk: "config.inference_saved_toast", toastErr: "config.inference_save_failed", feedKind: "config" },
+          async function () {
+            var host = (R.$("inferHost") && R.$("inferHost").value) ? R.$("inferHost").value.trim() : "";
+            var port = (R.$("inferPort") && R.$("inferPort").value) ? parseInt(R.$("inferPort").value, 10) : 5000;
+            var path = (R.$("inferPath") && R.$("inferPath").value) ? R.$("inferPath").value.trim() : "/predict";
+            await saveInferenceConfigAction(host, port, path);
+          }
+        );
+      });
+    }
+
     R.$("btnRunInference").addEventListener("click", async function () {
       await runAction(
         { id: "btnRunInference", busyText: "action.run_inference", toastOk: "inference.requested_toast", toastErr: "inference.request_failed", feedKind: "inferencia" },
-        async function () {
-          const wasStreaming = state.streaming;
-          const prevTs = Number(state.lastInferTs || 0);
-          if (wasStreaming) {
-            updateStream(false);
-            await sleep(220);
-          }
-
-          R.$("diagnosisMain").classList.add("loading");
-          await A.jpost("/api/inference/run", {});
-          pushFeed("inferencia", t("inference.requested"));
-
-          // Wait for a fresh inference cycle before resuming the stream.
-          const start = Date.now();
-          while (Date.now() - start < 5000) {
-            await sleep(380);
-            let last = null;
-            try {
-              last = await A.jget("/api/inference/last");
-            } catch (e) {
-              continue;
-            }
-            const ts = Number(last && last.ts_ms) || 0;
-            if (ts > prevTs) break;
-          }
-
-          await refreshAll({ silent: true });
-          if (wasStreaming) {
-            updateStream(true);
-          }
-        }
+        runInferenceAction
       );
     });
 
@@ -500,7 +542,7 @@
       startPolling();
     });
     R.$("trendRange").addEventListener("change", function () {
-      refreshAll({ silent: true }).catch(function () {});
+      Store.updateState({});
     });
     R.$("btnExportTrends").addEventListener("click", exportTrendCsv);
     document.addEventListener("stg:lang-changed", function () {
@@ -512,21 +554,38 @@
     });
   }
 
-  function startPolling() {
-    if (state.pollTimer) clearInterval(state.pollTimer);
-    state.pollTimer = setInterval(function () {
-      refreshAll({ silent: true }).catch(function (err) {
+  var POLL_MS_DEFAULT = 3500;
+  var POLL_MS_MAX = 30000;
+
+  function scheduleNextPoll() {
+    if (state.pollTimer) clearTimeout(state.pollTimer);
+    state.pollTimer = setTimeout(function () {
+      state.pollTimer = null;
+      refreshAll({ silent: true }).then(function () {
+        if (state.pollMs > POLL_MS_DEFAULT) state.pollMs = POLL_MS_DEFAULT;
+        scheduleNextPoll();
+      }).catch(function (err) {
         R.setError(err);
         pushFeed("sistema", t("sync.error", { error: err.message }));
         R.showToast(t("sync.error_toast"), "warn");
+        if (state.pollMs < POLL_MS_MAX) state.pollMs = Math.min(POLL_MS_MAX, state.pollMs * 2 || POLL_MS_DEFAULT);
+        scheduleNextPoll();
       });
     }, state.pollMs);
+  }
+
+  function startPolling() {
+    scheduleNextPoll();
   }
 
   async function boot() {
     T.init();
     R.$("langSelect").value = T.getLang();
     state.streamProfile = R.$("streamProfile").value || "auto";
+    A.jget("/api/inference/schema").then(function (schema) {
+      if (window.STGMap && window.STGMap.init) window.STGMap.init(schema);
+    }).catch(function () {});
+    setupStoreSubscribers();
     bindUi();
     setStreamHint();
     setHud();
@@ -538,6 +597,13 @@
 
     startPolling();
   }
+
+  window.STGActions = {
+    runInference: runInferenceAction,
+    saveInferenceConfig: saveInferenceConfigAction,
+    irrigate: irrigate,
+    stopIrrigation: stopIrrigation
+  };
 
   boot().catch(function (err) {
     R.setError(err);

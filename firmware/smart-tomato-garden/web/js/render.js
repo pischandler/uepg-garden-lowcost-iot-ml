@@ -5,7 +5,7 @@
   function setBadge(elId, text, cls) {
     const node = $(elId);
     node.textContent = text;
-    node.className = ("status " + (cls || "")).trim();
+    node.className = ("status u-status-base " + (cls || "")).trim();
   }
 
   function gaugeColor(pct) {
@@ -136,6 +136,13 @@
     $("mqttPub").textContent = String(metrics.mqtt_pub || 0);
     $("mqttFail").textContent = String(metrics.mqtt_fail || 0);
     $("lastSync").textContent = t("status.synced_at", { time: new Date().toLocaleTimeString() });
+
+    var inferHostEl = $("inferHost");
+    var inferPortEl = $("inferPort");
+    var inferPathEl = $("inferPath");
+    if (inferHostEl) inferHostEl.value = config.infer_host || "";
+    if (inferPortEl) inferPortEl.value = String(config.infer_port || 5000);
+    if (inferPathEl) inferPathEl.value = config.infer_path || "/predict";
   }
 
   function setInference(vm, rawLastInfer) {
@@ -199,7 +206,7 @@
     ];
     items.forEach(function (txt) {
       const chip = document.createElement("span");
-      chip.className = "chip";
+      chip.className = "chip u-chip-style";
       chip.textContent = txt;
       chips.appendChild(chip);
     });
