@@ -1,162 +1,127 @@
-# 🌱 Low-Cost Smart Garden — IoT + AI (ESP32-S3 + Flask)
+# Low-Cost Smart Garden — IoT + ML (ESP32-S3 + Flask)
 
-Low-cost smart indoor garden integrating an **ESP32-S3** (sensors, actuators, and **OV2640** camera) with a **Flask inference API** for **tomato leaf disease detection**.
+Horta inteligente de baixo custo que integra **ESP32-S3** (sensores, câmera OV2640, atuadores) com uma **API Flask de inferência** para **detecção de doenças em folhas de tomate**.
 
-The AI pipeline performs:
-- **Leaf segmentation (HSV)** + **letterbox resize (128×128)**
-- Extraction of **102 handcrafted features** (Haralick, LBP, Hu, Zernike, HSV histograms, morphology)
-- Model comparison (**Random Forest**, **SVM**, **XGBoost**) with **5-fold stratified cross-validation**
-- Deployment of the best model in a **Flask server** returning **prediction + confidence + top-3 + latency**
-- Structured **logs** for traceability
+Fluxo ponta a ponta: **captura no ESP → envio para o servidor → extração de features → predição → JSON (classe, score, top-k, latência)**.
 
-End-to-end flow: **capture → transmit → inference → JSON → logs**
+---
 
+## Estrutura do repositório
 
-## Repository Structure
+```
+uepg-garden-lowcost-iot-ml/
+├── firmware/
+│   └── smart-tomato-garden/   # Firmware ESP32-S3 (C++, PlatformIO), câmera, web UI, NVS
+├── ml/                        # Pipeline ML (Python): augment, train, eval, API
+│   ├── src/garden_ml/
+│   ├── tests/
+│   └── pyproject.toml
+├── docs/                      # architecture.md, api.md, etc.
+├── tools/                     # Scripts auxiliares (ex.: firmware)
+├── Makefile                   # venv, ml-test, ml-augment, ml-train, ml-eval, ml-serve, Docker
+├── CLAUDE.md                  # Contexto para assistentes
+├── AGENTS.md                  # Guia de regras por área
+└── SKILLS.md                  # Comandos e caminhos de referência
+```
 
-uepg-horta-lowcost-iot-ml/
-├── smart-tomato-garden/
-│   └── (ESP32-S3 firmware + OV2640 streaming + sensor/actuator automation)
-└── ai/
-    ├── model_training/
-    │   ├── 01_dataset_augmentation/
-    │   └── 02_leaf_segmentation_feature_training/
-    └── inference/
-        └── 03_flask_inference_server/
+---
 
+## Módulo de hardware (ESP32-S3)
 
-## Hardware Module (ESP32-S3)
+O firmware em `firmware/smart-tomato-garden/` é responsável por:
 
-The firmware runs on ESP32-S3 and is responsible for:
-- Reading sensors (soil moisture, light, temperature/humidity)
-- Controlling actuators (irrigation pump and fan via relay logic)
-- Providing camera streaming and/or image capture for transmission to the inference service
-- Maintaining stable operation with timing and hysteresis safeguards
+- Ler sensores (umidade do solo, luz, temperatura/umidade DHT22)
+- Controlar atuadores (bomba de irrigação, ventilador)
+- Oferecer captura de imagem (`/capture`) e streaming MJPEG (`/stream`) para o servidor de inferência
+- Expor saúde, métricas e configuração (incluindo **servidor de inferência** via web ou API)
 
-### Main GPIO Mapping (as used in the project)
+**GPIO principais** (conferir `firmware/smart-tomato-garden/include/config.h`):
 
-Component | ESP32-S3 GPIO | Purpose
----|---:|---
-Soil moisture sensor (analog) | 1 | Soil moisture reading
-LDR light sensor (analog) | 14 | Light intensity reading
-DHT22 | 21 | Air temperature/humidity
-Relay (pump) | 47 | Pump control
+| Componente        | GPIO | Função                |
+|-------------------|------|------------------------|
+| Sensor umidade   | 1    | Leitura analógica      |
+| LDR              | 14   | Intensidade de luz     |
+| DHT22            | 21   | Temperatura/umidade    |
+| Relé (bomba)     | 47   | Controle da irrigação |
 
-> Camera OV2640 pin mapping is defined in the firmware configuration for the selected ESP32-S3 camera board variant.
+O mapeamento da câmera OV2640 depende da placa utilizada (definido no firmware).
 
+**Documentação detalhada:** [firmware/README.md](firmware/README.md).
 
-## AI Module (Flask + ML)
+---
 
-The AI module is located in `ai/` and contains:
-- Dataset augmentation tooling
-- Leaf segmentation + feature extraction + model training/evaluation
-- Flask inference server aligned with the training pipeline
+## Módulo ML (servidor de inferência)
 
-### What the API returns
-For each request, the service outputs:
-- Predicted class
-- Confidence score
-- Top-3 classes with scores
-- Inference time (seconds)
-- Optional saved artifacts (original + intermediate visual representations) and a CSV log for audit
+O pacote em `ml/` (Python ≥3.10) inclui:
 
+- **Augmentação** com Albumentations (manifest e config exportados)
+- **Extração de 188 features** (Haralick, Zernike, histogramas HSV, LBP, Hu, forma, LAB, chroma) — mesma fonte para treino e inferência
+- **Treino** com Random Forest, SVM e XGBoost; CV por grupo (StratifiedGroupKFold) para evitar vazamento
+- **Avaliação** com macro F1, balanced accuracy, ECE, matriz de confusão e sensibilidade à iluminação
+- **API Flask** com `/health`, `/metrics` (Prometheus), upload de imagem e busca por URL (ex.: `http://esp/capture`)
 
-## Quick Start (AI Inference)
+**Pré-processamento:** não é usada normalização fotométrica; apenas **segmentação HSV** e **redimensionamento** (letterbox). Treino e inferência devem usar o mesmo `img_size` (ex.: 128).
 
-### 1) Create a virtual environment and install dependencies
+**Documentação detalhada:** [ml/README.md](ml/README.md).
+
+---
+
+## Início rápido
+
+### 1. ML (treino e API)
 
 ```bash
-cd ai/inference/03_flask_inference_server
-python -m venv .venv
-# Linux/macOS
-source .venv/bin/activate
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
+# Na raiz do repositório
+make venv
+make ml-test                    # rodar testes
+make ml-augment-default         # augment (usa LOCAL_DATASET_RAW → LOCAL_DATASET_AUG)
+make ml-train-default           # treino (usa LOCAL_DATASET_AUG → LOCAL_ARTIFACTS_DIR)
+make ml-eval-default            # avaliação
+make ml-serve                   # sobe a API em http://0.0.0.0:5000
+```
 
-pip install -r requirements.txt
+Variáveis do Make (dataset, artefatos, seed, etc.): ver `Makefile` ou `make help`. Referência de comandos: [SKILLS.md](SKILLS.md).
 
-2) Place trained artifacts
+### 2. Testar a API (após artefatos treinados)
 
-Ensure the following files are available where the inference server expects them:
+```bash
+# Upload de imagem
+curl -X POST http://127.0.0.1:5000/analisar -F "image=@/caminho/para/folha.jpg"
 
-modelo_tomate.pkl
+# Ou servidor busca no ESP (configurar infer_host no ESP antes)
+curl -X POST http://127.0.0.1:5000/analisar_url \
+  -H "Content-Type: application/json" \
+  -d '{"url":"http://192.168.100.12/capture","device_id":"stg-01"}'
+```
 
-label_encoder.pkl
+Resposta típica: `classe_predita`, `score`, `topk`, `timings_ms`, `meta`.
 
-These are produced by:
-ai/model_training/02_leaf_segmentation_feature_training
+### 3. Firmware (ESP32-S3)
 
-3) Run the server
+```bash
+cd firmware/smart-tomato-garden
+# Copiar e preencher secrets
+cp include/secrets.example.h include/secrets.h
+# Ajustar config.h se necessário
+pio run
+pio run -t upload
+```
 
-python app.py
+Configurar o servidor de inferência no ESP: pela **interface web** (card "Configuração do servidor de inferência") ou com o script `python tools/set_inference.py --esp <IP_ESP> --ml <IP_ML>`.
 
-4) Test with curl
+---
 
-curl -X POST http://127.0.0.1:5000/analisar \
-  -F "image=@/path/to/leaf.jpg"
+## Documentação adicional
 
-  Example response:
+- **Arquitetura e fluxos:** [docs/architecture.md](docs/architecture.md)
+- **Endpoints da API:** [docs/api.md](docs/api.md)
+- **Contexto para assistentes:** [CLAUDE.md](CLAUDE.md) · [AGENTS.md](AGENTS.md) · [SKILLS.md](SKILLS.md)
 
-{
-  "classe_predita": "Tomato_Late_blight",
-  "score": 0.88,
-  "top3": [
-    {"classe": "Tomato_Late_blight", "score": 0.88},
-    {"classe": "Tomato_Early_blight", "score": 0.07},
-    {"classe": "Tomato_Bacterial_spot", "score": 0.03}
-  ],
-  "tempo_inferencia_s": 0.21
-}
+---
 
-Model Training Overview
+## Licença e créditos
 
-Training scripts (inside ai/model_training/) follow this methodology:
+Recomendado: **MIT**. Incluir arquivo `LICENSE` na raiz.
 
-Segment leaves using HSV thresholds and morphological operations
-
-Standardize images to 128×128 with letterbox resizing
-
-Extract 102-feature vectors per image
-
-Train and compare:
-
-Random Forest
-
-SVM (RBF + scaling)
-
-XGBoost
-
-Hyperparameter tuning via GridSearchCV
-
-5-fold stratified CV for robust selection
-
-Export:
-
-modelo_tomate.pkl
-
-label_encoder.pkl
-
-evaluation reports and comparison files
-
-Operational Notes
-
-Training and inference must use the same preprocessing and 102-feature schema.
-
-If the model is retrained, always replace both:
-
-modelo_tomate.pkl
-
-label_encoder.pkl
-
-For best real-world stability, keep capture conditions as consistent as possible (lighting, focus, distance), or expand augmentation/collection to match field conditions.
-
-License
-
-Recommended: MIT License
-Add a LICENSE file at the repository root.
-
-Credits
-
-Developed at Universidade Estadual de Ponta Grossa (UEPG) — Department of Informatics.
-Advisor: Prof. Luciano J. Senger
-Co-advisor: Prof. Gabrielly de Queiroz Pereira
+Desenvolvido na **Universidade Estadual de Ponta Grossa (UEPG)** — Departamento de Informática.  
+Orientador: Prof. Luciano J. Senger · Coorientadora: Prof. Gabrielly de Queiroz Pereira.

@@ -8,7 +8,7 @@ O projeto é dividido em 3 camadas:
 - Exponde endpoints HTTP (ex.: `/capture`) para entrega da imagem e telemetria.
 
 2) **ML (Servidor)**
-- Pipeline offline: augmentação → extração 102 features → treino (RF/SVM/XGB) → avaliação (métricas + robustez a iluminação).
+- Pipeline offline: augmentação → extração 188 features → treino (RF/SVM/XGB) → avaliação (métricas + robustez a iluminação). Sem normalização fotométrica; apenas segmentação HSV e redimensionamento.
 - Pipeline online: API recebe imagem (upload) ou busca a imagem via URL (puxando do ESP32) e retorna diagnóstico.
 
 3) **Consumo/Integração**
@@ -44,7 +44,7 @@ O projeto é dividido em 3 camadas:
 - Schema explícito e verificável: `feature_schema.json`
 - Reprodutibilidade: seed e split por grupos
 - Avaliação ampla: macro-F1, weighted-F1, balanced acc, MCC, matriz confusão, latência
-- Robustez: experimento de sensibilidade à iluminação + normalização fotométrica
+- Robustez: experimento de sensibilidade à iluminação (sem normalização fotométrica na pipeline atual)
 - Observabilidade: Prometheus `/metrics`
 
 ## Evoluções futuras

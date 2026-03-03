@@ -1,65 +1,70 @@
-# API
+# API de inferência
 
 Base URL: `http://<host>:<port>`
 
-## GET /health
-Retorna classes carregadas e sanity do serviço.
+A API usa o mesmo pré-processamento do treino (segmentação HSV + redimensionamento); não é aplicada normalização fotométrica.
 
-Resposta:
+---
+
+## GET /health
+
+Retorna classes carregadas e sanidade do serviço.
+
+**Resposta exemplo:**
+
 ```json
 {
   "ok": true,
-  "classes": ["Tomato_healthy", "..."],
-  "artifacts_dir": "artifacts/model_registry/v0001"
+  "classes": ["Tomato_healthy", "Tomato_Late_blight", "..."],
+  "artifacts_dir": "artifacts/model_registry/v0001",
+  "model_img_size": 128
 }
-GET /metrics
-Endpoint Prometheus.
+```
 
-POST /analisar
-Upload de imagem.
+---
 
-Content-Type: multipart/form-data
+## GET /metrics
 
-Campo: image
+Métricas no formato Prometheus (contadores, histogramas de latência, etc.).
 
-Query params:
+---
 
-normalize=1 (opcional) ativa normalização fotométrica
+## POST /analisar
 
-Headers:
+Upload de imagem para análise.
 
-X-Device-Id (opcional)
+- **Content-Type:** `multipart/form-data`
+- **Campo:** `image` (arquivo)
+- **Headers opcionais:** `X-Device-Id` para rastreabilidade
 
-Resposta:
+**Resposta exemplo:**
 
+```json
 {
   "classe_predita": "Tomato_healthy",
   "score": 0.93,
-  "topk": [{"classe":"...","score":0.93}],
-  "timings_ms": {"decode_ms":1.2,"features_ms":12.0,"predict_ms":0.5,"total_ms":13.7},
-  "meta": {"device_id":"...", "photometric_normalize":true}
+  "topk": [{"classe": "Tomato_healthy", "score": 0.93}, "..."],
+  "timings_ms": {"decode_ms": 1.2, "features_ms": 12.0, "predict_ms": 0.5, "total_ms": 13.7},
+  "meta": {"device_id": "...", "model_img_size": 128}
 }
-POST /analisar_url
-Servidor busca a imagem direto do ESP32 (modelo recomendado).
+```
 
-Body JSON:
+---
 
+## POST /analisar_url
+
+O servidor busca a imagem no ESP (ou em qualquer URL) e analisa. Modo recomendado quando o cliente é o próprio servidor chamando o ESP.
+
+- **Content-Type:** `application/json`
+- **Body exemplo:**
+
+```json
 {
   "url": "http://192.168.0.10/capture",
-  "device_id": "stg-001",
-  "normalize": true
+  "device_id": "stg-001"
 }
-Resposta no mesmo formato do /analisar.
+```
 
-Observação:
-Se o firmware incluir headers como:
+Resposta no mesmo formato do `/analisar`.
 
-X-Lux-Raw
-
-X-Soil-Raw
-
-X-Temp-C
-
-X-Hum-Pct
-
-eles serão repassados no meta para rastreabilidade e análises.
+Se o firmware enviar headers como `X-Lux-Raw`, `X-Soil-Raw`, `X-Temp-C`, `X-Hum-Pct` na resposta de `/capture`, eles podem ser repassados no `meta` para rastreabilidade.
