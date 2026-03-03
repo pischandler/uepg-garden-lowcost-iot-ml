@@ -1,66 +1,101 @@
-﻿# Ignore tudo por padrÃ£o
-**
+# -----------------------------------------------------------------------------
+# Smart Tomato Garden — .gitignore (projeto acadêmico em evolução)
+# Só listamos o que ignorar; o resto é versionado (docs, código, configs de exemplo).
+# -----------------------------------------------------------------------------
 
-# Permite apenas o necessÃ¡rio para build da imagem
-!ml/**
-!docker-compose.yml
-
-# SeguranÃ§a/ambiente
+# --- Segurança e ambiente local ---
 .env
-.env.*
+.env.local
+.env.*.local
+# Credenciais do firmware (versionar apenas secrets.example.h)
 **/secrets.h
-**/secrets.*.h
+firmware/**/secrets.*.h
+# Garantir que o template seja versionado
+!firmware/**/secrets.example.h
 
-# Venv / caches
+# --- Python / ML ---
 .venv/
 venv/
-**/__pycache__/
-**/*.pyc
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+*.manifest
+
+# Testes e qualidade (cache local)
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.hypothesis/
 
-# RepositÃ³rio / CI / firmware / datasets / outputs
-.git/
-.github/
-firmware/
-tools/
-docs/
+# Dados e artefatos (pesados; descomente uma linha para versionar uma versão)
+ml/dataset/
+ml/artifacts/
 dataset/
 dataset_aug/
-reports/
-ml/reports/
+datasets/
+
+# Experimentos e logs (MLflow, Wandb, outputs)
 mlruns/
 wandb/
-salvas/
-outputs/
 runs/
+outputs/
 logs/
+*.log
+reports/
+ml/reports/
+salvas/
+tmp/
+temp/
+*.tmp
 
-# Narrow scope: keep firmware ignored except modular Web UI sources
-!firmware/
-!firmware/smart-tomato-garden/
-firmware/smart-tomato-garden/**
-!firmware/smart-tomato-garden/web/
-!firmware/smart-tomato-garden/web/index.template.html
-!firmware/smart-tomato-garden/web/styles.css
-!firmware/smart-tomato-garden/web/js/
-!firmware/smart-tomato-garden/web/js/*.js
-!firmware/smart-tomato-garden/web/i18n/
-!firmware/smart-tomato-garden/web/i18n/*.json
-!firmware/smart-tomato-garden/.github/
-!firmware/smart-tomato-garden/.github/workflows/
-!firmware/smart-tomato-garden/.github/workflows/*.yml
-!firmware/smart-tomato-garden/.github/ISSUE_TEMPLATE/
-!firmware/smart-tomato-garden/.github/ISSUE_TEMPLATE/*.md
-!firmware/smart-tomato-garden/docs/
-!firmware/smart-tomato-garden/docs/**
-!firmware/smart-tomato-garden/tools/
-!firmware/smart-tomato-garden/tools/*.py
-!firmware/smart-tomato-garden/.githooks/
-!firmware/smart-tomato-garden/.githooks/*
-!firmware/smart-tomato-garden/config/
-!firmware/smart-tomato-garden/config/release/
-!firmware/smart-tomato-garden/config/release/*.json
+# Jupyter (se usar notebooks no futuro)
+.ipynb_checkpoints/
+*.ipynb_checkpoints
 
+# --- Firmware (ESP32 / PlatformIO) ---
+# Build e cache do PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+*.bin
+*.elf
 
+# IDE/editor no firmware (configurações locais)
+.vscode/
+.vscode/.browse.c_cpp.db*
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch
+.idea/
 
+# --- Raiz / ferramentas ---
+tools/dataset/
+tools/**/output/
+
+# --- Sistema e editor (raiz e subpastas) ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+
+# Cursor / VSCode (opcional: remova a linha abaixo se quiser versionar .cursor)
+.cursor/
+
+# Dumps e artefatos gerados por scripts
+dump_scripts.txt
+**/dump_scripts.txt
+**/artifacts_meta.json
+**/artifacts_size.json
