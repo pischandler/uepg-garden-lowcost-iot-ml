@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la ml/Dockerfile*)",
+      "Bash(du -sh ml/artifacts/model_registry/v000*)",
+      "Bash(rm -rf ml/.pytest_cache)",
+      "Bash(rm -rf firmware/smart-tomato-garden/tools/__pycache__)",
+      "Bash(rm -f dump_scripts.txt)",
+      "Bash(rm -f ml/dump_scripts.txt)"
+    ]
+  }
+}

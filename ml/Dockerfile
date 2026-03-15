@@ -6,9 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
 
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     bash \
     libgl1 \
     libglib2.0-0 \
@@ -16,9 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY ml/ ./ml/
 
-RUN pip install --no-cache-dir -U pip \
-    && pip install --no-cache-dir -e "./ml" \
-    && pip install --no-cache-dir gunicorn
+RUN uv pip install --system --no-cache -e "./ml"
 
 EXPOSE 5000
 

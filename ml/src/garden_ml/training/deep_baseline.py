@@ -96,6 +96,7 @@ def main() -> int:
     ap.add_argument("--img_size", type=int, default=224)
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument("--num_workers", type=int, default=4)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--test_size", type=float, default=0.30)
@@ -208,8 +209,8 @@ def main() -> int:
     ds_train = ImgDataset(train, class_to_idx, tfm_train)
     ds_test = ImgDataset(test, class_to_idx, tfm_test)
 
-    dl_train = DataLoader(ds_train, batch_size=int(args.batch), shuffle=True, num_workers=2, pin_memory=True)
-    dl_test = DataLoader(ds_test, batch_size=int(args.batch), shuffle=False, num_workers=2, pin_memory=True)
+    dl_train = DataLoader(ds_train, batch_size=int(args.batch), shuffle=True, num_workers=int(args.num_workers), pin_memory=True)
+    dl_test = DataLoader(ds_test, batch_size=int(args.batch), shuffle=False, num_workers=int(args.num_workers), pin_memory=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

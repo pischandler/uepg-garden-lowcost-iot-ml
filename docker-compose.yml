@@ -1,7 +1,8 @@
 # Smart Tomato Garden — ML API e ambiente de desenvolvimento.
 # Uso: make docker-up / make docker-down / make docker-logs
 #       make docker-run-all (build + pipeline + API) ou make docker-test (só testes).
-# Variáveis: GML_ARTIFACTS_DIR (caminho dentro do container), COMPOSE_PROJECT_NAME.
+#       make docker-up-compare (sobe serviço de comparação clássico vs CNN na porta 5001)
+# Variáveis: GML_ARTIFACTS_DIR, GML_ARTIFACTS_DIR_DL, COMPOSE_PROJECT_NAME.
 
 services:
   garden-ml-api:
@@ -28,6 +29,33 @@ services:
       timeout: 5s
       retries: 3
 
+  garden-ml-compare:
+    build:
+      context: .
+      dockerfile: ml/Dockerfile.compare
+    image: garden-ml-compare:latest
+    platform: linux/amd64
+    container_name: garden-ml-compare
+    environment:
+      GML_LOG_LEVEL: ${GML_LOG_LEVEL:-INFO}
+      GML_SAVE_DEBUG: ${GML_SAVE_DEBUG:-0}
+      GML_ARTIFACTS_DIR: ${GML_ARTIFACTS_DIR:-/app/ml/artifacts/model_registry/v0004}
+      GML_ARTIFACTS_DIR_DL: ${GML_ARTIFACTS_DIR_DL:-/app/ml/artifacts/model_registry/v0004_dl}
+      GML_HOST: 0.0.0.0
+      GML_PORT: 5001
+    ports:
+      - "${GML_PORT_COMPARE:-5001}:5001"
+    volumes:
+      - ./ml/artifacts/model_registry:/app/ml/artifacts/model_registry
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/health').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    profiles:
+      - compare
+
   garden-ml-dev:
     build:
       context: .
@@ -44,5 +72,6 @@ services:
       PYTHONUNBUFFERED: 1
       GML_MLFLOW_TRACKING_URI: file:/app/ml/mlruns
       GML_MLFLOW_EXPERIMENT: smart-tomato-garden
+      GML_GRID_N_JOBS: ${GML_GRID_N_JOBS:-4}
     profiles:
       - dev

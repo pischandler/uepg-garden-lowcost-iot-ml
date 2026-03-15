@@ -6,6 +6,7 @@ VENV_DIR := .venv
 COMPOSE ?= docker compose
 DEV_SERVICE ?= garden-ml-dev
 API_SERVICE ?= garden-ml-api
+COMPARE_SERVICE ?= garden-ml-compare
 
 # Local (host) — paths relativos à raiz do repo
 LOCAL_DATASET_RAW ?= ml/dataset/plantvillage_tomato/raw
@@ -16,6 +17,10 @@ LOCAL_ARTIFACTS_DIR ?= ml/artifacts/model_registry/v0004
 DATASET_RAW ?= dataset/plantvillage_tomato/raw
 DATASET_AUG ?= dataset/plantvillage_tomato/aug
 ARTIFACTS_DIR ?= artifacts/model_registry/v0004
+ARTIFACTS_DIR_DL ?= artifacts/model_registry/v0004_dl
+
+# Local (host) — paths para DL
+LOCAL_ARTIFACTS_DIR_DL ?= ml/artifacts/model_registry/v0004_dl
 
 # Pipeline
 IMG_SIZE ?= 128
@@ -52,9 +57,11 @@ endif
 .PHONY := help venv install ml-test ml-augment ml-train ml-eval ml-serve \
 	ml-augment-default ml-train-default ml-eval-default ml-pipeline ml-run-all \
 	format lint clean \
-	docker-build docker-build-api docker-build-dev docker-shell \
-	docker-sanity-raw docker-test docker-augment docker-train docker-eval docker-pipeline \
-	docker-up docker-down docker-logs docker-run-all \
+	docker-build docker-build-api docker-build-dev docker-build-compare docker-build-all \
+	docker-shell docker-sanity-raw docker-test \
+	docker-clean-aug docker-augment docker-train docker-eval docker-deep docker-pipeline \
+	docker-up docker-up-compare docker-down docker-logs docker-logs-compare \
+	docker-run-all docker-run-compare \
 	up down logs pipeline server stop vars
 
 help:
@@ -74,17 +81,24 @@ help:
 	@echo "    ml-run-all                       — ml-pipeline + ml-serve"
 	@echo ""
 	@echo "  Docker:"
-	@echo "    docker-build                     — build das duas imagens (api + dev)"
+	@echo "    docker-build                     — build api + dev (sem compare)"
+	@echo "    docker-build-compare             — build só imagem compare (com DL)"
+	@echo "    docker-build-all                 — build api + dev + compare"
 	@echo "    docker-build-api, docker-build-dev  — build só uma imagem"
 	@echo "    docker-shell                     — shell no container dev (make docker-shell)"
 	@echo "    docker-sanity-raw                — conta imagens no dataset RAW no container"
 	@echo "    docker-test                      — pytest no container dev"
+	@echo "    docker-clean-aug                 — remove pasta aug no container (antes de reroda)"
 	@echo "    docker-augment, docker-train, docker-eval  — um passo no container"
+	@echo "    docker-deep                      — treino CNN (MobileNetV3) no container dev"
 	@echo "    docker-pipeline                  — sanity + test + augment + train + eval"
-	@echo "    docker-up                        — sobe API em background"
-	@echo "    docker-down                      — derruba stack"
-	@echo "    docker-logs                      — logs da API"
+	@echo "    docker-up                        — sobe API clássica em background (porta 5000)"
+	@echo "    docker-up-compare                — sobe API de comparação em background (porta 5001)"
+	@echo "    docker-down                      — derruba stack (todos os serviços)"
+	@echo "    docker-logs                      — logs da API clássica"
+	@echo "    docker-logs-compare              — logs da API de comparação"
 	@echo "    docker-run-all                   — docker-build + docker-pipeline + docker-up"
+	@echo "    docker-run-compare               — docker-build-compare + docker-deep + docker-up-compare"
 	@echo ""
 	@echo "  Qualidade:"
 	@echo "    format                           — ruff format ml/"
@@ -111,12 +125,11 @@ vars:
 # --- Venv e ML local ---
 venv:
 ifeq ($(OS),Windows_NT)
-	@if not exist "$(VENV_PY)" $(PYTHON) -m venv $(VENV_DIR)
+	@if not exist "$(VENV_PY)" uv venv $(VENV_DIR)
 else
-	@test -d $(VENV_DIR) || $(PYTHON) -m venv $(VENV_DIR)
+	@test -d $(VENV_DIR) || uv venv $(VENV_DIR)
 endif
-	@"$(VENV_PY)" -m pip install -U pip
-	@"$(VENV_PY)" -m pip install -e "./$(ML_DIR)[dev,reports,tracking]"
+	@uv pip install --python "$(VENV_PY)" -e "./$(ML_DIR)[dev,reports,tracking]"
 
 install: venv
 
@@ -162,13 +175,18 @@ clean:
 
 # --- Docker ---
 docker-build:
-	@$(COMPOSE) build
+	@$(COMPOSE) build $(API_SERVICE) $(DEV_SERVICE)
 
 docker-build-api:
-	@$(COMPOSE) build garden-ml-api
+	@$(COMPOSE) build $(API_SERVICE)
 
 docker-build-dev:
-	@$(COMPOSE) build garden-ml-dev
+	@$(COMPOSE) build $(DEV_SERVICE)
+
+docker-build-compare:
+	@$(COMPOSE) --profile compare build $(COMPARE_SERVICE)
+
+docker-build-all: docker-build docker-build-compare
 
 docker-shell:
 	@$(COMPOSE) run --rm $(DEV_SERVICE) bash
@@ -188,18 +206,32 @@ docker-train:
 docker-eval:
 	@$(COMPOSE) run --rm -T $(DEV_SERVICE) bash -lc "garden-ml-eval --dataset_dir '$(DATASET_AUG)' --artifacts_dir '$(ARTIFACTS_DIR)' --img_size $(IMG_SIZE) --manifest $(MANIFEST)"
 
+docker-deep:
+	@$(COMPOSE) run --rm -T $(DEV_SERVICE) bash -lc "garden-ml-deep --dataset_dir '$(DATASET_AUG)' --output_dir '$(ARTIFACTS_DIR_DL)' --seed $(SEED)"
+
+docker-clean-aug:
+	@$(COMPOSE) run --rm -T $(DEV_SERVICE) bash -lc "rm -rf '$(DATASET_AUG)' && echo 'aug cleaned'"
+
 docker-pipeline: docker-sanity-raw docker-test docker-augment docker-train docker-eval
 
 docker-up:
 	@$(COMPOSE) up -d $(API_SERVICE)
 
+docker-up-compare:
+	@$(COMPOSE) --profile compare up -d $(COMPARE_SERVICE)
+
 docker-down:
-	@$(COMPOSE) down
+	@$(COMPOSE) --profile compare down
 
 docker-logs:
 	@$(COMPOSE) logs -f --tail=200 $(API_SERVICE)
 
+docker-logs-compare:
+	@$(COMPOSE) logs -f --tail=200 $(COMPARE_SERVICE)
+
 docker-run-all: docker-build docker-pipeline docker-up
+
+docker-run-compare: docker-build-compare docker-deep docker-up-compare
 
 # Aliases
 run-all: docker-run-all
