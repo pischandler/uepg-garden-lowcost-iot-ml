@@ -1,0 +1,12 @@
+{
+  "groups_overlap": 0,
+  "train_kind_counts": {
+    "aug": 56040,
+    "orig": 11208
+  },
+  "test_kind_counts": {
+    "orig": 4803
+  },
+  "orig_hash_overlap_removed_from_test": 0,
+  "orig_hash_overlap_examples": []
+}

@@ -1,0 +1,115 @@
+{
+  "final_model": "XGBoost",
+  "final_macro_f1": 0.9619050289792327,
+  "img_size": 128,
+  "test_size": 0.3,
+  "seed": 42,
+  "cv_folds": 5,
+  "classes": [
+    "Tomato_Bacterial_spot",
+    "Tomato_Early_blight",
+    "Tomato_Late_blight",
+    "Tomato_Leaf_Mold",
+    "Tomato_Septoria_leaf_spot",
+    "Tomato_Spider_mites_Two_spotted_spider_mite",
+    "Tomato__Target_Spot",
+    "Tomato__Tomato_YellowLeaf__Curl_Virus",
+    "Tomato__Tomato_mosaic_virus",
+    "Tomato_healthy"
+  ],
+  "feature_schema": {
+    "total": 188,
+    "parts": {
+      "haralick_13": 13,
+      "zernike_25_degree8": 25,
+      "hsv_hist_48": 48,
+      "lbp_nri_uniform_hist_59": 59,
+      "hu_7": 7,
+      "mean_hsv_3": 3,
+      "std_hsv_3": 3,
+      "shape_basic_6": 6,
+      "lab_ab_mean_std_4": 4,
+      "lab_ab_hist_16": 16,
+      "chroma_rg_mean_std_4": 4
+    },
+    "order": [
+      "haralick_13",
+      "zernike_25_degree8",
+      "hsv_hist_48",
+      "lbp_nri_uniform_hist_59",
+      "hu_7",
+      "mean_hsv_3",
+      "std_hsv_3",
+      "shape_basic_6",
+      "lab_ab_mean_std_4",
+      "lab_ab_hist_16",
+      "chroma_rg_mean_std_4"
+    ]
+  },
+  "feature_schema_sha1": "c41b613450401bf234349fda75b41cca7d52a924",
+  "photometric_normalize": false,
+  "dataset_dir": "dataset/plantvillage_tomato/aug",
+  "n_train": 67248,
+  "n_test": 4803,
+  "features_dim": 188,
+  "class_distribution_all": {
+    "Tomato_Bacterial_spot": 9572,
+    "Tomato_Early_blight": 4500,
+    "Tomato_Late_blight": 8594,
+    "Tomato_Leaf_Mold": 4282,
+    "Tomato_Septoria_leaf_spot": 7971,
+    "Tomato_Spider_mites_Two_spotted_spider_mite": 7541,
+    "Tomato__Target_Spot": 6319,
+    "Tomato__Tomato_YellowLeaf__Curl_Virus": 14433,
+    "Tomato__Tomato_mosaic_virus": 1678,
+    "Tomato_healthy": 7161
+  },
+  "class_distribution_train": {
+    "Tomato_Bacterial_spot": 8934,
+    "Tomato_Early_blight": 4200,
+    "Tomato_Late_blight": 8022,
+    "Tomato_Leaf_Mold": 3996,
+    "Tomato_Septoria_leaf_spot": 7440,
+    "Tomato_Spider_mites_Two_spotted_spider_mite": 7038,
+    "Tomato__Target_Spot": 5898,
+    "Tomato__Tomato_YellowLeaf__Curl_Virus": 13470,
+    "Tomato__Tomato_mosaic_virus": 1566,
+    "Tomato_healthy": 6684
+  },
+  "class_distribution_test": {
+    "Tomato_Bacterial_spot": 638,
+    "Tomato_Early_blight": 300,
+    "Tomato_Late_blight": 572,
+    "Tomato_Leaf_Mold": 286,
+    "Tomato_Septoria_leaf_spot": 531,
+    "Tomato_Spider_mites_Two_spotted_spider_mite": 503,
+    "Tomato__Target_Spot": 421,
+    "Tomato__Tomato_YellowLeaf__Curl_Virus": 963,
+    "Tomato__Tomato_mosaic_virus": 112,
+    "Tomato_healthy": 477
+  },
+  "errors_count": 0,
+  "kind_counts_all": {
+    "aug": 80055,
+    "orig": 16011
+  },
+  "train_kind_counts": {
+    "aug": 56040,
+    "orig": 11208
+  },
+  "test_kind_counts": {
+    "orig": 4803
+  },
+  "leakage_check": {
+    "groups_overlap": 0,
+    "orig_hash_overlap_removed_from_test": 0
+  },
+  "dataset_integrity": {
+    "cross_class_duplicate_hashes": 0,
+    "cross_class_duplicate_groups_removed": 0,
+    "dedup_gid_remap_count": 14
+  },
+  "grid_n_jobs": 4,
+  "grid_pre_dispatch": "1*n_jobs",
+  "dump_features_csv": false
+}

@@ -1,0 +1,24 @@
+{
+  "model": "mobilenet_v3_small",
+  "best_macro_f1": 0.9901824102748564,
+  "classes": [
+    "Tomato_Bacterial_spot",
+    "Tomato_Early_blight",
+    "Tomato_Late_blight",
+    "Tomato_Leaf_Mold",
+    "Tomato_Septoria_leaf_spot",
+    "Tomato_Spider_mites_Two_spotted_spider_mite",
+    "Tomato__Target_Spot",
+    "Tomato__Tomato_YellowLeaf__Curl_Virus",
+    "Tomato__Tomato_mosaic_virus",
+    "Tomato_healthy"
+  ],
+  "img_size": 224,
+  "test_size": 0.3,
+  "seed": 42,
+  "dedup_gid_remap_count": 14,
+  "cross_class_duplicate_groups_removed": 0,
+  "hash_overlap_removed_from_test": 0,
+  "n_train": 67248,
+  "n_test": 4803
+}
