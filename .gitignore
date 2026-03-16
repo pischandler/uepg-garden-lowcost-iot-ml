@@ -37,12 +37,30 @@ build/
 htmlcov/
 .hypothesis/
 
-# Dados e artefatos (pesados; descomente uma linha para versionar uma versão)
+# Dataset bruto e aumentado (grande demais para Git; regenerável)
 ml/dataset/
-ml/artifacts/
 dataset/
 dataset_aug/
 datasets/
+tools/dataset/
+
+# Versões antigas de modelos (substituídas por v0005)
+ml/artifacts/model_registry/v0002/
+ml/artifacts/model_registry/v0003/
+ml/artifacts/model_registry/v0004/
+
+# Cache de features de treino (regenerável via make docker-train)
+ml/artifacts/model_registry/v0005/checkpoints/X_train.npy
+ml/artifacts/model_registry/v0005/checkpoints/X_test.npy
+ml/artifacts/model_registry/v0005/checkpoints/g_train.npy
+ml/artifacts/model_registry/v0005/checkpoints/y_train_enc.npy
+ml/artifacts/model_registry/v0005/checkpoints/y_test_enc.npy
+
+# O restante de ml/artifacts/ é versionado:
+#   model_registry/v0005/     — modelo clássico (XGBoost + ONNX)
+#   model_registry/v0005_dl/  — modelo CNN (MobileNetV3)
+#   validation/               — vetores de features para validate-parity
+#   migration_benchmark.png   — comparativo Python vs Rust
 
 # Experimentos e logs (MLflow, Wandb, outputs)
 mlruns/
@@ -79,7 +97,6 @@ temp/
 .idea/
 
 # --- Raiz / ferramentas ---
-tools/dataset/
 tools/**/output/
 
 # --- Sistema e editor (raiz e subpastas) ---

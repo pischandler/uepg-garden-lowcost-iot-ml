@@ -1,6 +1,14 @@
+# Git LFS — binários grandes de ML (modelos, pesos, arrays de features)
+# Instalar: git lfs install  (uma vez por máquina)
+# Clonar:   git clone — o LFS baixa automaticamente
+
+# Modelos scikit-learn / joblib
 *.pkl filter=lfs diff=lfs merge=lfs -text
+# Modelos ONNX
 *.onnx filter=lfs diff=lfs merge=lfs -text
+# Pesos PyTorch
 *.pt filter=lfs diff=lfs merge=lfs -text
 *.pth filter=lfs diff=lfs merge=lfs -text
+# Arrays NumPy
 *.npy filter=lfs diff=lfs merge=lfs -text
 *.npz filter=lfs diff=lfs merge=lfs -text

@@ -5,6 +5,11 @@
 !ml/**
 !docker-compose.yml
 
+# Servidor Rust/Axum
+!server/Cargo.toml
+!server/Cargo.lock
+!server/src/**
+
 # Opcional: permitir docs se você quiser dentro da imagem (normalmente não precisa)
 #!docs/**
 
