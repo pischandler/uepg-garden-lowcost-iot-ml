@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=5000)
 
+    # Shadow mode: mirrors /predict to Rust server in background for comparison.
+    # Enable with GML_SHADOW_MODE=1 + GML_SHADOW_URL=http://rust-host:5002
+    shadow_mode: bool = Field(default=False)
+    shadow_url: str = Field(default="")
+    shadow_log: Path = Field(default=Path("salvas") / "shadow_log.csv")
+    shadow_timeout_s: int = Field(default=10)
+
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO")
     seed: int = Field(default=42)
 

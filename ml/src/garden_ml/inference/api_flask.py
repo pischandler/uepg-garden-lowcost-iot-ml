@@ -19,6 +19,7 @@ from garden_ml.inference.serializers import PredictionResponse, PredictionTopK
 from garden_ml.inference.storage import DebugStorage
 from garden_ml.inference.predictor import load_artifacts, predict_from_image_bytes, predict_topk
 from garden_ml.inference.predictor_dl import load_artifacts_dl, predict_from_image_bytes_dl, predict_from_rgb_dl
+from garden_ml.inference.shadow import fire_and_log as _shadow_fire
 
 REQ_COUNT = Counter("gml_requests_total", "Total requests", ["endpoint", "status"])
 REQ_LAT = Histogram("gml_request_latency_ms", "Request latency (ms)", ["endpoint"])
@@ -160,6 +161,27 @@ def _build_app(st: Settings) -> Flask:
             if "decode_ms" in timings:
                 DECODE_LAT.observe(float(timings["decode_ms"]))
 
+            # shadow mode: espelha /predict para Rust em background (sem bloquear ESP32)
+            if (
+                st.shadow_mode
+                and st.shadow_url
+                and str(meta.get("endpoint", "")) == "/predict"
+            ):
+                try:
+                    _shadow_fire(
+                        rust_url=st.shadow_url,
+                        image_bytes=data,
+                        py_class=resp.classe_predita,
+                        py_score=float(resp.score),
+                        py_total_ms=float(timings.get("total_ms", 0.0)),
+                        device_id=str(meta.get("device_id", "")),
+                        endpoint="/predict",
+                        csv_path=st.shadow_log,
+                        timeout_s=int(st.shadow_timeout_s),
+                    )
+                except Exception:
+                    logger.exception("shadow_fire_failed")
+
             # debug: salva JPEG bruto + imagem decodificada
             if debug_store is not None:
                 try:
@@ -189,7 +211,7 @@ def _build_app(st: Settings) -> Flask:
                 except Exception:
                     logger.exception("debug_storage_failed")
 
-            return _json_response(resp.model_dump(), 200)
+            return resp.model_dump(), 200
 
         except Exception as e:
             t1 = time.perf_counter()
@@ -197,7 +219,7 @@ def _build_app(st: Settings) -> Flask:
             REQ_COUNT.labels(endpoint=ep, status="500").inc()
             REQ_LAT.labels(endpoint=ep).observe((t1 - t0) * 1000.0)
             logger.exception("infer_failed endpoint={}", ep)
-            return _json_response({"erro": "Falha durante a análise.", "mensagem": str(e)}, 500)
+            return {"erro": "Falha durante a análise.", "mensagem": str(e)}, 500
 
     # ✅ endpoint para o ESP (JPEG bruto no body)
     @app.post("/predict")
@@ -313,9 +335,20 @@ def _build_app(st: Settings) -> Flask:
             t1 = time.perf_counter()
             REQ_COUNT.labels(endpoint="/predict_compare", status="200").inc()
             REQ_LAT.labels(endpoint="/predict_compare").observe((t1 - t0) * 1000.0)
+
+            total_c = float(timings_c.get("total_ms", 0.0))
+            total_d = float(timings_d.get("total_ms", 0.0))
+            agreement = {
+                "same_class": cls_c == cls_d,
+                "confidence_delta": round(abs(score_c - score_d), 6),
+                "faster_model": "classical" if total_c <= total_d else "mobilenet",
+                "latency_delta_ms": round(abs(total_c - total_d), 3),
+            }
+
             return _json_response({
                 "classical": resp_c.model_dump(),
                 "mobilenet": resp_d.model_dump(),
+                "agreement": agreement,
             }, 200)
         except Exception as e:
             t1 = time.perf_counter()
@@ -382,6 +415,34 @@ def _build_app(st: Settings) -> Flask:
         }
         out, code = _infer_bytes(data, meta)
         return _json_response(out, code)
+
+    # ── debug endpoints (apenas quando GML_SAVE_DEBUG=1) ──────────────────────
+    if bool(getattr(st, "save_debug", False)):
+        from garden_ml.features.extract import ExtractOptions, extract_features_and_meta_from_rgb
+
+        @app.post("/debug/features")
+        def debug_features():
+            """Return raw 188-dim feature vector for Rust parity validation.
+            Only active when GML_SAVE_DEBUG=1. Do not expose in production.
+            """
+            data = request.get_data(cache=False) or b""
+            if not data:
+                return _json_response({"erro": "Envie bytes JPEG no body."}, 400)
+            try:
+                bgr = decode_bgr_from_bytes(data)
+                rgb = bgr_to_rgb(bgr)
+                feat, meta = extract_features_and_meta_from_rgb(rgb, ExtractOptions(img_size=int(arts.img_size)))
+                return _json_response({
+                    "features": feat.tolist(),
+                    "n_features": int(feat.size),
+                    "img_size": int(arts.img_size),
+                    "mask_coverage": float(meta.get("mask_coverage", 0.0)),
+                    "mean_v": float(meta.get("mean_v", 0.0)),
+                    "laplacian_var": float(meta.get("laplacian_var", 0.0)),
+                })
+            except Exception as e:
+                logger.exception("debug_features_failed")
+                return _json_response({"erro": str(e)}, 500)
 
     return app
 
