@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,7 +97,7 @@ def main() -> int:
     ap.add_argument("--img_size", type=int, default=224)
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--batch", type=int, default=32)
-    ap.add_argument("--num_workers", type=int, default=4)
+    ap.add_argument("--num_workers", type=int, default=min(8, os.cpu_count() or 4))
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--test_size", type=float, default=0.30)
@@ -104,6 +105,12 @@ def main() -> int:
     args = ap.parse_args()
 
     set_seed(int(args.seed))
+
+    # Maximize CPU thread usage for PyTorch math operations
+    n_cpu = os.cpu_count() or 1
+    torch.set_num_threads(n_cpu)
+    torch.set_num_interop_threads(max(1, n_cpu // 2))
+
     dataset_dir = Path(args.dataset_dir)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -209,8 +216,9 @@ def main() -> int:
     ds_train = ImgDataset(train, class_to_idx, tfm_train)
     ds_test = ImgDataset(test, class_to_idx, tfm_test)
 
-    dl_train = DataLoader(ds_train, batch_size=int(args.batch), shuffle=True, num_workers=int(args.num_workers), pin_memory=True)
-    dl_test = DataLoader(ds_test, batch_size=int(args.batch), shuffle=False, num_workers=int(args.num_workers), pin_memory=True)
+    use_gpu = torch.cuda.is_available()
+    dl_train = DataLoader(ds_train, batch_size=int(args.batch), shuffle=True, num_workers=int(args.num_workers), pin_memory=use_gpu)
+    dl_test = DataLoader(ds_test, batch_size=int(args.batch), shuffle=False, num_workers=int(args.num_workers), pin_memory=use_gpu)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -223,10 +231,27 @@ def main() -> int:
 
     best_macro = -1.0
     best_path = out_dir / "mobilenetv3_small_best.pt"
+    checkpoint_path = out_dir / "checkpoint_latest.pt"
+    start_epoch = 1
+    epoch_times: list[float] = []
 
-    for ep in range(1, int(args.epochs) + 1):
+    # Resume from checkpoint if available
+    if checkpoint_path.is_file():
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+        opt.load_state_dict(ckpt["optimizer_state"])
+        start_epoch = int(ckpt["epoch"]) + 1
+        best_macro = float(ckpt["best_macro"])
+        logger.info("deep_resume_checkpoint epoch={} best_macro_f1={:.4f}", start_epoch - 1, best_macro)
+
+    total_epochs = int(args.epochs)
+
+    for ep in range(start_epoch, total_epochs + 1):
+        ep_t0 = time.time()
         model.train()
-        for x, y in tqdm(dl_train, desc=f"train_ep{ep}", unit="batch", mininterval=1.0):
+        running_loss = 0.0
+        n_batches = 0
+        for x, y in tqdm(dl_train, desc=f"train_ep{ep}/{total_epochs}", unit="batch", mininterval=2.0):
             x = x.to(device)
             y = y.to(device)
             opt.zero_grad(set_to_none=True)
@@ -234,12 +259,16 @@ def main() -> int:
             loss = loss_fn(out, y)
             loss.backward()
             opt.step()
+            running_loss += float(loss.item())
+            n_batches += 1
+
+        avg_loss = running_loss / max(1, n_batches)
 
         model.eval()
         yt = []
         yp = []
         with torch.no_grad():
-            for x, y in tqdm(dl_test, desc=f"eval_ep{ep}", unit="batch", mininterval=1.0):
+            for x, y in tqdm(dl_test, desc=f"eval_ep{ep}/{total_epochs}", unit="batch", mininterval=2.0):
                 x = x.to(device)
                 out = model(x)
                 pred = torch.argmax(out, dim=1).cpu().numpy()
@@ -248,11 +277,33 @@ def main() -> int:
         y_true = np.concatenate(yt, axis=0)
         y_pred = np.concatenate(yp, axis=0)
         m = metrics(y_true, y_pred, n_classes=n_classes)
-        logger.info("deep_ep={} acc={:.4f} macro_f1={:.4f}", ep, m["accuracy"], m["macro_f1"])
 
-        if float(m["macro_f1"]) > best_macro:
+        ep_elapsed = time.time() - ep_t0
+        epoch_times.append(ep_elapsed)
+        remaining_epochs = total_epochs - ep
+        eta_s = float(np.mean(epoch_times)) * remaining_epochs
+
+        is_best = float(m["macro_f1"]) > best_macro
+        if is_best:
             best_macro = float(m["macro_f1"])
             torch.save({"model": model.state_dict(), "classes": classes, "img_size": int(args.img_size)}, best_path)
+
+        logger.info(
+            "deep_ep={}/{} loss={:.4f} acc={:.4f} macro_f1={:.4f} best={:.4f} ep_s={:.0f} eta_min={:.0f}{}",
+            ep, total_epochs, avg_loss, m["accuracy"], m["macro_f1"], best_macro,
+            ep_elapsed, eta_s / 60.0,
+            " [best]" if is_best else "",
+        )
+
+        # Save checkpoint after every epoch (model + optimizer state for safe resume)
+        torch.save({
+            "epoch": ep,
+            "model_state": model.state_dict(),
+            "optimizer_state": opt.state_dict(),
+            "best_macro": best_macro,
+            "classes": classes,
+            "img_size": int(args.img_size),
+        }, checkpoint_path)
 
     meta = {
         "model": "mobilenet_v3_small",

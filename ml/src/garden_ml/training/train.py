@@ -8,6 +8,7 @@ import json
 import os
 import random
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any
 
 import joblib
 import numpy as np
+from joblib import Parallel, delayed
 import pandas as pd
 from loguru import logger
 from sklearn.ensemble import RandomForestClassifier
@@ -41,6 +43,84 @@ from garden_ml.data.manifest import class_distribution, samples_from_manifest, s
 from garden_ml.data.splits import expand_groups, stratified_group_split
 from garden_ml.features.extract import ExtractOptions, extract_features_from_path
 from garden_ml.features.schema import SCHEMA, write_schema
+
+
+class _HeartbeatLogger:
+    """Logs progress every `interval_s` seconds while a GridSearch is running."""
+
+    def __init__(self, model_name: str, interval_s: float = 60.0) -> None:
+        self._name = model_name
+        self._interval = interval_s
+        self._stop = threading.Event()
+        self._t0 = time.time()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self) -> "_HeartbeatLogger":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5)
+
+    def _run(self) -> None:
+        import psutil
+
+        proc = psutil.Process()
+        while not self._stop.wait(timeout=self._interval):
+            elapsed = time.time() - self._t0
+            mem_mb = proc.memory_info().rss / 1024 / 1024
+            logger.info(
+                "grid_heartbeat model={} elapsed_min={:.1f} mem_mb={:.0f}",
+                self._name,
+                elapsed / 60.0,
+                mem_mb,
+            )
+
+
+def _save_feature_cache(cache_dir: Path, X_train: np.ndarray, X_test: np.ndarray, y_train_enc: np.ndarray, y_test_enc: np.ndarray, g_train_arr: np.ndarray, scaler: Any, le: Any) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    np.save(cache_dir / "X_train.npy", X_train)
+    np.save(cache_dir / "X_test.npy", X_test)
+    np.save(cache_dir / "y_train_enc.npy", y_train_enc)
+    np.save(cache_dir / "y_test_enc.npy", y_test_enc)
+    np.save(cache_dir / "g_train.npy", g_train_arr)
+    joblib.dump(scaler, cache_dir / "scaler.pkl")
+    joblib.dump(le, cache_dir / "le.pkl")
+    logger.info("feature_cache_saved dir={}", str(cache_dir))
+
+
+def _load_feature_cache(cache_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Any, Any] | None:
+    needed = ["X_train.npy", "X_test.npy", "y_train_enc.npy", "y_test_enc.npy", "g_train.npy", "scaler.pkl", "le.pkl"]
+    if not all((cache_dir / f).is_file() for f in needed):
+        return None
+    X_train = np.load(cache_dir / "X_train.npy")
+    X_test = np.load(cache_dir / "X_test.npy")
+    y_train_enc = np.load(cache_dir / "y_train_enc.npy")
+    y_test_enc = np.load(cache_dir / "y_test_enc.npy")
+    g_train_arr = np.load(cache_dir / "g_train.npy", allow_pickle=True)
+    scaler = joblib.load(cache_dir / "scaler.pkl")
+    le = joblib.load(cache_dir / "le.pkl")
+    logger.info("feature_cache_loaded dir={}", str(cache_dir))
+    return X_train, X_test, y_train_enc, y_test_enc, g_train_arr, scaler, le
+
+
+def _save_model_checkpoint(cache_dir: Path, name: str, estimator: Any, entry: dict[str, Any]) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(estimator, cache_dir / f"{name}_estimator.pkl")
+    (cache_dir / f"{name}_entry.json").write_text(json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("model_checkpoint_saved model={}", name)
+
+
+def _load_model_checkpoint(cache_dir: Path, name: str) -> tuple[Any, dict[str, Any]] | None:
+    est_path = cache_dir / f"{name}_estimator.pkl"
+    entry_path = cache_dir / f"{name}_entry.json"
+    if not est_path.is_file() or not entry_path.is_file():
+        return None
+    estimator = joblib.load(est_path)
+    entry = json.loads(entry_path.read_text(encoding="utf-8"))
+    logger.info("model_checkpoint_loaded model={} test_macro_f1={:.4f}", name, float(entry.get("test_macro_f1", 0)))
+    return estimator, entry
 
 
 def next_registry_version(registry_dir: Path) -> Path:
@@ -77,9 +157,13 @@ class ModelSpec:
     name: str
     estimator: Any
     param_grid: dict[str, list[Any]]
+    grid_n_jobs: int = 0  # 0 = use global GML_GRID_N_JOBS; >0 = override
 
 
 def build_specs(seed: int) -> list[ModelSpec]:
+    # RF and XGBoost already use n_jobs=-1 internally → run one fold at a time
+    # to avoid oversubscription (4 folds × 12 cores = 48 threads on 12 physical cores).
+    # SVM has no internal parallelism → maximize parallel folds.
     rf = RandomForestClassifier(random_state=seed, n_jobs=-1)
 
     svm = SVC(probability=True, random_state=seed)
@@ -103,6 +187,7 @@ def build_specs(seed: int) -> list[ModelSpec]:
                 "min_samples_leaf": [1, 2],
                 "max_features": ["sqrt"],
             },
+            grid_n_jobs=1,
         ),
         ModelSpec(
             name="SVM",
@@ -112,6 +197,7 @@ def build_specs(seed: int) -> list[ModelSpec]:
                 "C": [0.1, 1.0, 10.0],
                 "gamma": ["scale", "auto"],
             },
+            grid_n_jobs=6,
         ),
         ModelSpec(
             name="XGBoost",
@@ -123,6 +209,7 @@ def build_specs(seed: int) -> list[ModelSpec]:
                 "subsample": [0.8, 1.0],
                 "colsample_bytree": [0.8, 1.0],
             },
+            grid_n_jobs=1,
         ),
     ]
 
@@ -436,73 +523,98 @@ def main() -> int:
     }
     (out_dir / "leakage_check.json").write_text(json.dumps(leakage_report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    opts = ExtractOptions(img_size=int(args.img_size))
-
-    X_train_list: list[np.ndarray] = []
-    y_train_list: list[str] = []
-    g_train_list: list[str] = []
-    X_test_list: list[np.ndarray] = []
-    y_test_list: list[str] = []
+    checkpoint_dir = out_dir / "checkpoints"
     errors: list[dict[str, str]] = []
 
-    t0 = time.time()
-    for ((p, c), gid) in tqdm(list(zip(train_items, train_g)), desc="features_train", unit="img", mininterval=1.0):
-        try:
-            X_train_list.append(extract_features_from_path(Path(p), opts))
-            y_train_list.append(str(c))
-            g_train_list.append(str(gid))
-        except Exception as e:
-            errors.append({"path": str(p), "error": str(e)})
+    # --- feature cache: skip extraction on resume if cache exists ---
+    cached = _load_feature_cache(checkpoint_dir)
+    if cached is not None:
+        X_train, X_test, y_train_enc, y_test_enc, g_train_arr, scaler, le = cached
+    else:
+        opts = ExtractOptions(img_size=int(args.img_size))
 
-    for p, c in tqdm(test_items, desc="features_test", unit="img", mininterval=1.0):
-        try:
-            X_test_list.append(extract_features_from_path(Path(p), opts))
-            y_test_list.append(str(c))
-        except Exception as e:
-            errors.append({"path": str(p), "error": str(e)})
+        X_train_list: list[np.ndarray] = []
+        y_train_list: list[str] = []
+        g_train_list: list[str] = []
+        X_test_list: list[np.ndarray] = []
+        y_test_list: list[str] = []
 
-    if not X_train_list or not X_test_list:
-        raise SystemExit("no valid samples after feature extraction")
+        def _extract_safe(p: str, opts: ExtractOptions) -> np.ndarray | None:
+            try:
+                return extract_features_from_path(Path(p), opts)
+            except Exception as e:
+                errors.append({"path": p, "error": str(e)})
+                return None
 
-    X_train = np.vstack(X_train_list).astype(np.float32, copy=False)
-    X_test = np.vstack(X_test_list).astype(np.float32, copy=False)
-    y_train = np.array(y_train_list, dtype=object)
-    y_test = np.array(y_test_list, dtype=object)
-    g_train_arr = np.array(g_train_list, dtype=object)
+        _FEAT_N_JOBS = 8
 
-    logger.info(
-        "features_done train={} test={} failed={} elapsed_s={:.3f}",
-        int(X_train.shape[0]),
-        int(X_test.shape[0]),
-        int(len(errors)),
-        float(time.time() - t0),
-    )
-
-    le = LabelEncoder()
-    le.fit(y_train)
-
-    unseen = sorted(list(set(np.unique(y_test)).difference(set(le.classes_))))
-    if unseen:
-        raise SystemExit(f"test has unseen classes (label leakage/stratify issue): {unseen}")
-
-    y_train_enc = le.transform(y_train)
-    y_test_enc = le.transform(y_test)
-
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test = scaler.transform(X_test)
-
-    write_schema(out_dir / FEATURE_SCHEMA_FILE)
-
-    if bool(st.dump_features_csv):
-        df_all = pd.DataFrame(
-            np.vstack([X_train, X_test]),
-            columns=[f"f{i:03d}" for i in range(int(X_train.shape[1]))],
+        t0 = time.time()
+        logger.info("features_extract_start split=train n={} n_jobs={}", len(train_items), _FEAT_N_JOBS)
+        train_feats = Parallel(n_jobs=_FEAT_N_JOBS, prefer="threads")(
+            delayed(_extract_safe)(str(p), opts) for (p, _c), _gid in list(zip(train_items, train_g))
         )
-        df_all["label"] = np.concatenate([y_train, y_test], axis=0)
-        df_all.to_csv(out_dir / "features_188.csv", index=False, encoding="utf-8")
-        del df_all
-        gc.collect()
+        for feat, ((p, c), gid) in zip(train_feats, zip(train_items, train_g)):
+            if feat is not None:
+                X_train_list.append(feat)
+                y_train_list.append(str(c))
+                g_train_list.append(str(gid))
+        logger.info("features_extract_done split=train ok={} failed={} elapsed_s={:.1f}", len(X_train_list), len(errors), time.time() - t0)
+
+        t1 = time.time()
+        logger.info("features_extract_start split=test n={} n_jobs={}", len(test_items), _FEAT_N_JOBS)
+        test_feats = Parallel(n_jobs=_FEAT_N_JOBS, prefer="threads")(
+            delayed(_extract_safe)(str(p), opts) for p, _c in test_items
+        )
+        for feat, (p, c) in zip(test_feats, test_items):
+            if feat is not None:
+                X_test_list.append(feat)
+                y_test_list.append(str(c))
+        logger.info("features_extract_done split=test ok={} failed={} elapsed_s={:.1f}", len(X_test_list), len(errors) - (len(train_items) - len(X_train_list)), time.time() - t1)
+
+        if not X_train_list or not X_test_list:
+            raise SystemExit("no valid samples after feature extraction")
+
+        X_train = np.vstack(X_train_list).astype(np.float32, copy=False)
+        X_test = np.vstack(X_test_list).astype(np.float32, copy=False)
+        y_train = np.array(y_train_list, dtype=object)
+        y_test = np.array(y_test_list, dtype=object)
+        g_train_arr = np.array(g_train_list, dtype=object)
+
+        logger.info(
+            "features_done train={} test={} failed={} elapsed_s={:.3f}",
+            int(X_train.shape[0]),
+            int(X_test.shape[0]),
+            int(len(errors)),
+            float(time.time() - t0),
+        )
+
+        le = LabelEncoder()
+        le.fit(y_train)
+
+        unseen = sorted(list(set(np.unique(y_test)).difference(set(le.classes_))))
+        if unseen:
+            raise SystemExit(f"test has unseen classes (label leakage/stratify issue): {unseen}")
+
+        y_train_enc = le.transform(y_train)
+        y_test_enc = le.transform(y_test)
+
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_test = scaler.transform(X_test)
+
+        write_schema(out_dir / FEATURE_SCHEMA_FILE)
+
+        if bool(st.dump_features_csv):
+            df_all = pd.DataFrame(
+                np.vstack([X_train, X_test]),
+                columns=[f"f{i:03d}" for i in range(int(X_train.shape[1]))],
+            )
+            df_all["label"] = np.concatenate([y_train, y_test], axis=0)
+            df_all.to_csv(out_dir / "features_188.csv", index=False, encoding="utf-8")
+            del df_all
+            gc.collect()
+
+        _save_feature_cache(checkpoint_dir, X_train, X_test, y_train_enc, y_test_enc, g_train_arr, scaler, le)
 
     cv = group_cv(n_splits=int(args.cv_folds), seed=int(args.seed))
     specs = build_specs(seed=int(args.seed))
@@ -515,14 +627,34 @@ def main() -> int:
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     for spec in specs:
-        logger.info("grid_search_start model={} grid_n_jobs={} pre_dispatch={}", spec.name, int(st.grid_n_jobs), str(st.grid_pre_dispatch))
+        # --- model checkpoint: skip already-completed models on resume ---
+        ckpt = _load_model_checkpoint(checkpoint_dir, spec.name)
+        if ckpt is not None:
+            ckpt_est, entry = ckpt
+            leaderboard.append(entry)
+            if float(entry["test_macro_f1"]) > float(best_score):
+                best_score = float(entry["test_macro_f1"])
+                best_name = str(spec.name)
+                best_est = ckpt_est
+            continue
 
+        n_candidates = 1
+        for v in spec.param_grid.values():
+            n_candidates *= len(v)
+        n_fits = n_candidates * int(args.cv_folds)
+        effective_n_jobs = int(spec.grid_n_jobs) if int(spec.grid_n_jobs) > 0 else int(st.grid_n_jobs)
+        logger.info(
+            "grid_search_start model={} candidates={} folds={} total_fits={} grid_n_jobs={} pre_dispatch={}",
+            spec.name, n_candidates, int(args.cv_folds), n_fits, effective_n_jobs, str(st.grid_pre_dispatch),
+        )
+
+        effective_n_jobs = int(spec.grid_n_jobs) if int(spec.grid_n_jobs) > 0 else int(st.grid_n_jobs)
         grid = GridSearchCV(
             estimator=spec.estimator,
             param_grid=spec.param_grid,
             scoring="f1_macro",
             cv=cv,
-            n_jobs=int(st.grid_n_jobs),
+            n_jobs=effective_n_jobs,
             pre_dispatch=str(st.grid_pre_dispatch),
             refit=True,
             verbose=1,
@@ -530,7 +662,8 @@ def main() -> int:
         )
 
         t1 = time.time()
-        grid.fit(X_train, y_train_enc, groups=g_train_arr)
+        with _HeartbeatLogger(spec.name, interval_s=60.0):
+            grid.fit(X_train, y_train_enc, groups=g_train_arr)
         fit_s = float(time.time() - t1)
 
         y_pred = grid.predict(X_test)
@@ -565,6 +698,8 @@ def main() -> int:
             best_name = str(spec.name)
             best_est = grid.best_estimator_
 
+        _save_model_checkpoint(checkpoint_dir, spec.name, grid.best_estimator_, entry)
+
         logger.info(
             "grid_search_done model={} test_macro_f1={:.4f} test_acc={:.4f} cv_best={:.4f} time_s={:.2f}",
             spec.name,
@@ -582,10 +717,11 @@ def main() -> int:
     if best_est is None or best_name is None:
         raise SystemExit("no model selected")
 
-    joblib.dump(best_est, out_dir / MODEL_FILE)
+    full_pipeline = Pipeline([("scaler", scaler), ("model", best_est)])
+    joblib.dump(full_pipeline, out_dir / MODEL_FILE)
     joblib.dump(le, out_dir / ENCODER_FILE)
 
-    pipeline_for_onnx = Pipeline([("scaler", scaler), ("model", best_est)])
+    pipeline_for_onnx = full_pipeline
     export_pipeline_to_onnx(pipeline_for_onnx, out_dir / "model.onnx", n_features=int(X_train.shape[1]))
 
     meta = {

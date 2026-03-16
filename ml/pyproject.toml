@@ -34,7 +34,7 @@ dependencies = [
 reports = ["pandas>=2.0"]
 tracking = ["mlflow>=2.12"]
 viz = ["matplotlib>=3.7"]
-onnx = ["onnx>=1.15", "onnxruntime>=1.16", "skl2onnx>=1.16"]
+onnx = ["onnx>=1.15", "onnxruntime>=1.16", "skl2onnx>=1.16", "onnxmltools>=1.12"]
 explain = ["shap>=0.44"]
 dev = [
   "pytest>=8.0",
@@ -56,9 +56,19 @@ garden-ml-train = "garden_ml.training.train:main"
 garden-ml-eval = "garden_ml.training.evaluate:main"
 garden-ml-deep = "garden_ml.training.deep_baseline:main"
 garden-ml-serve = "garden_ml.inference.api_flask:main"
+garden-ml-export-onnx = "garden_ml.inference.onnx_export:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/garden_ml"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
 
 [tool.ruff]
 line-length = 120
