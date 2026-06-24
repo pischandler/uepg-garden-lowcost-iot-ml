@@ -111,8 +111,8 @@ Thumbs.db
 # Cursor / VSCode (opcional: remova a linha abaixo se quiser versionar .cursor)
 .cursor/
 
-# --- Paper: template de referência local (não versionado) ---
-paper/template/
+# --- Paper: template de referência local por congresso (não versionado) ---
+paper/*/template/
 
 # Dumps e artefatos gerados por scripts
 dump_scripts.txt
